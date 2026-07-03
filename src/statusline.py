@@ -155,13 +155,18 @@ def bar(pct, width=10):
     # floor(x+0.5) statt round(): identisches Runden wie die JS-Variante
     # (Python rundet halbe Werte zur geraden Zahl, JS nicht)
     filled = max(0, min(width, int(pct / 100 * width + 0.5)))
-    return "▰" * filled + DIM + "▱" * (width - filled)
+    return "\u25b0" * filled + DIM + "\u25b1" * (width - filled)
 
 
 def main():
     try:
-        # BOM strippen — manche Shells pipen mit
-        data = json.loads(sys.stdin.read().lstrip("﻿"))
+        # Windows-Python nutzt sonst cp1252 und crasht an den Balkenzeichen
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        # BOM strippen - manche Shells pipen mit
+        data = json.loads(sys.stdin.read().lstrip("\ufeff"))
     except Exception:
         print("Claude")
         return
@@ -200,10 +205,10 @@ def render(data):
     free = max(0, limit - used)
 
     col = RED if pct >= 90 else YELLOW if pct >= 70 else GREEN
-    sep = f" {DIM}│{RESET} "
+    sep = f" {DIM}\u2502{RESET} "
 
     ctx_seg = (f"{col}{fmt_tokens(used)}{RESET}{DIM}/{fmt_limit(limit)}{RESET} "
-               f"{DIM}·{RESET} free {GREEN}{fmt_tokens(free)}{RESET}")
+               f"{DIM}\u00b7{RESET} free {GREEN}{fmt_tokens(free)}{RESET}")
     if pct >= 85:
         ctx_seg += f" {RED}Compact bald!{RESET}"
 
@@ -228,7 +233,7 @@ def render(data):
     if (cost.get("total_duration_ms") or 0) > 60_000:
         cost_bits.append(fmt_duration(cost["total_duration_ms"]) + " runtime")
     if cost_bits:
-        parts.append(f"{DIM}{' · '.join(cost_bits)}{RESET}")
+        parts.append(f"{DIM}{' \u00b7 '.join(cost_bits)}{RESET}")
 
     cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd")
     if cwd:

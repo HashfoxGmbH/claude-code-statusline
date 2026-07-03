@@ -36,7 +36,7 @@ function fmtLimit(n) {
 }
 
 function readTail(file, maxBytes) {
-  // Nur das Dateiende lesen — Transcripts werden viele MB gross,
+  // Nur das Dateiende lesen - Transcripts werden viele MB gross,
   // die Statusline laeuft alle paar hundert ms.
   const fd = fs.openSync(file, 'r');
   try {
@@ -148,13 +148,13 @@ function fmtDuration(ms) {
 function bar(pct, width) {
   // floor(x+0.5) statt Math.round: identisches Runden wie die Python-Variante
   const filled = Math.max(0, Math.min(width, Math.floor((pct / 100) * width + 0.5)));
-  return '▰'.repeat(filled) + DIM + '▱'.repeat(width - filled);
+  return '\u25B0'.repeat(filled) + DIM + '\u25B1'.repeat(width - filled);
 }
 
 function main() {
   let data = {};
   try {
-    // BOM strippen — manche Shells (Windows PowerShell 5.1) pipen mit
+    // BOM strippen - manche Shells (Windows PowerShell 5.1) pipen mit
     const raw = fs.readFileSync(0, 'utf8');
     data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
   } catch {
@@ -196,9 +196,9 @@ function render(data) {
   const free = Math.max(0, limit - used);
 
   const col = pct >= 90 ? RED : pct >= 70 ? YELLOW : GREEN;
-  const sep = ` ${DIM}│${RESET} `;
+  const sep = ` ${DIM}\u2502${RESET} `;
 
-  let ctxSeg = `${col}${fmtTokens(used)}${RESET}${DIM}/${fmtLimit(limit)}${RESET} ${DIM}·${RESET} free ${GREEN}${fmtTokens(free)}${RESET}`;
+  let ctxSeg = `${col}${fmtTokens(used)}${RESET}${DIM}/${fmtLimit(limit)}${RESET} ${DIM}\u00B7${RESET} free ${GREEN}${fmtTokens(free)}${RESET}`;
   if (pct >= 85) ctxSeg += ` ${RED}Compact bald!${RESET}`;
 
   const parts = [
@@ -219,7 +219,7 @@ function render(data) {
     costBits.push(`${GREEN}+${cost.total_lines_added || 0}${RESET}${DIM}/${RESET}${RED}-${cost.total_lines_removed || 0}${RESET}${DIM} lines${RESET}`);
   }
   if (cost.total_duration_ms > 60_000) costBits.push(fmtDuration(cost.total_duration_ms) + ' runtime');
-  if (costBits.length) parts.push(`${DIM}${costBits.join(' · ')}${RESET}`);
+  if (costBits.length) parts.push(`${DIM}${costBits.join(' \u00B7 ')}${RESET}`);
 
   const cwd = (data.workspace && data.workspace.current_dir) || data.cwd;
   if (cwd) {

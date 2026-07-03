@@ -1,4 +1,4 @@
-# Claude Code Statusline (PowerShell) — Zero-Dependency-Variante fuer Windows.
+# Claude Code Statusline (PowerShell) - Zero-Dependency-Variante fuer Windows.
 # Funktions-Gegenstueck zu statusline.js (Node) und statusline.py (Python):
 # Modell, Context-Balken/%, used/limit, free, laufende Subagenten, Kosten,
 # Zeilen, Laufzeit, Ordner + Git-Branch. Kontrakt: niemals crashen.
@@ -29,8 +29,10 @@ function Format-Duration([double]$ms) {
 
 function Get-Bar([double]$pct, [int]$width) {
     # floor(x+0.5): identisches Runden wie JS-/Python-Variante
-    $filled = [math]::Max(0, [math]::Min($width, [math]::Floor($pct / 100 * $width + 0.5)))
-    return ('▰' * $filled) + $DIM + ('▱' * ($width - $filled))
+    $filled = [int][math]::Floor($pct / 100 * $width + 0.5)
+    if ($filled -lt 0) { $filled = 0 }
+    if ($filled -gt $width) { $filled = $width }
+    return (([string][char]0x25B0) * $filled) + $DIM + (([string][char]0x25B1) * ($width - $filled))
 }
 
 function Get-TranscriptUsed($data) {
@@ -60,7 +62,7 @@ function Get-TranscriptUsed($data) {
 
 function Get-Limit($data, [double]$used) {
     # 1M-Session erkennen, wenn context_window fehlt (aeltere Versionen /
-    # Resume-Edge-Cases) — sonst wuerde eine resumte 1M-Session /200k zeigen.
+    # Resume-Edge-Cases) - sonst wuerde eine resumte 1M-Session /200k zeigen.
     if ($used -gt 200000) { return 1000000 }
     if ($data.exceeds_200k_tokens) { return 1000000 }
     $modelStr = "$($data.model.id) $($data.model.display_name)"
@@ -135,14 +137,15 @@ try {
         $limit = Get-Limit $data $used
         $pct = if ($limit) { $used / $limit * 100 } else { 0 }
     }
-    if ([double]::IsNaN($pct) -or [double]::IsInfinity($pct)) { $pct = 0 }
-    $pct = [math]::Max(0, $pct)
-    $free = [math]::Max(0, $limit - $used)
+    # Kein [math]::Max(0, $x): PS waehlt dort den Int32-Overload und RUNDET
+    if ([double]::IsNaN($pct) -or [double]::IsInfinity($pct) -or $pct -lt 0) { $pct = 0 }
+    $free = $limit - $used
+    if ($free -lt 0) { $free = 0 }
 
     $col = if ($pct -ge 90) { $RED } elseif ($pct -ge 70) { $YELLOW } else { $GREEN }
-    $sep = " $DIM│$RESET "
+    $sep = " $DIM$([char]0x2502)$RESET "
 
-    $ctxSeg = "$col$(Format-Tokens $used)$RESET$DIM/$(Format-Limit $limit)$RESET $DIM·$RESET free $GREEN$(Format-Tokens $free)$RESET"
+    $ctxSeg = "$col$(Format-Tokens $used)$RESET$DIM/$(Format-Limit $limit)$RESET $DIM$([char]0xB7)$RESET free $GREEN$(Format-Tokens $free)$RESET"
     if ($pct -ge 85) { $ctxSeg += " ${RED}Compact bald!$RESET" }
 
     $pctText = [string]::Format($inv, '{0:0}', $pct)
@@ -162,7 +165,7 @@ try {
         $costBits += "$GREEN+$([int]$cost.total_lines_added)$RESET$DIM/$RESET$RED-$([int]$cost.total_lines_removed)$RESET$DIM lines$RESET"
     }
     if ($cost.total_duration_ms -gt 60000) { $costBits += "$(Format-Duration $cost.total_duration_ms) runtime" }
-    if ($costBits.Count) { $parts += "$DIM$($costBits -join ' · ')$RESET" }
+    if ($costBits.Count) { $parts += "$DIM$($costBits -join (' ' + [char]0xB7 + ' '))$RESET" }
 
     $cwd = if ($data.workspace.current_dir) { $data.workspace.current_dir } else { $data.cwd }
     if ($cwd) {

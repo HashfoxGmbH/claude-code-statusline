@@ -1,4 +1,4 @@
-﻿# Claude Code Statusline - Installer (Windows)
+# Claude Code Statusline - Installer (Windows)
 # Zeigt Modell, Context-Verbrauch (%, Balken, free), laufende Subagenten,
 # Kosten, Zeilen und Laufzeit unter der Eingabezeile jeder Claude-Code-Session.
 #
@@ -57,7 +57,7 @@ function fmtLimit(n) {
 }
 
 function readTail(file, maxBytes) {
-  // Nur das Dateiende lesen — Transcripts werden viele MB gross,
+  // Nur das Dateiende lesen - Transcripts werden viele MB gross,
   // die Statusline laeuft alle paar hundert ms.
   const fd = fs.openSync(file, 'r');
   try {
@@ -169,13 +169,13 @@ function fmtDuration(ms) {
 function bar(pct, width) {
   // floor(x+0.5) statt Math.round: identisches Runden wie die Python-Variante
   const filled = Math.max(0, Math.min(width, Math.floor((pct / 100) * width + 0.5)));
-  return '▰'.repeat(filled) + DIM + '▱'.repeat(width - filled);
+  return '\u25B0'.repeat(filled) + DIM + '\u25B1'.repeat(width - filled);
 }
 
 function main() {
   let data = {};
   try {
-    // BOM strippen — manche Shells (Windows PowerShell 5.1) pipen mit
+    // BOM strippen - manche Shells (Windows PowerShell 5.1) pipen mit
     const raw = fs.readFileSync(0, 'utf8');
     data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
   } catch {
@@ -217,9 +217,9 @@ function render(data) {
   const free = Math.max(0, limit - used);
 
   const col = pct >= 90 ? RED : pct >= 70 ? YELLOW : GREEN;
-  const sep = ` ${DIM}│${RESET} `;
+  const sep = ` ${DIM}\u2502${RESET} `;
 
-  let ctxSeg = `${col}${fmtTokens(used)}${RESET}${DIM}/${fmtLimit(limit)}${RESET} ${DIM}·${RESET} free ${GREEN}${fmtTokens(free)}${RESET}`;
+  let ctxSeg = `${col}${fmtTokens(used)}${RESET}${DIM}/${fmtLimit(limit)}${RESET} ${DIM}\u00B7${RESET} free ${GREEN}${fmtTokens(free)}${RESET}`;
   if (pct >= 85) ctxSeg += ` ${RED}Compact bald!${RESET}`;
 
   const parts = [
@@ -240,7 +240,7 @@ function render(data) {
     costBits.push(`${GREEN}+${cost.total_lines_added || 0}${RESET}${DIM}/${RESET}${RED}-${cost.total_lines_removed || 0}${RESET}${DIM} lines${RESET}`);
   }
   if (cost.total_duration_ms > 60_000) costBits.push(fmtDuration(cost.total_duration_ms) + ' runtime');
-  if (costBits.length) parts.push(`${DIM}${costBits.join(' · ')}${RESET}`);
+  if (costBits.length) parts.push(`${DIM}${costBits.join(' \u00B7 ')}${RESET}`);
 
   const cwd = (data.workspace && data.workspace.current_dir) || data.cwd;
   if (cwd) {
@@ -414,13 +414,18 @@ def bar(pct, width=10):
     # floor(x+0.5) statt round(): identisches Runden wie die JS-Variante
     # (Python rundet halbe Werte zur geraden Zahl, JS nicht)
     filled = max(0, min(width, int(pct / 100 * width + 0.5)))
-    return "▰" * filled + DIM + "▱" * (width - filled)
+    return "\u25b0" * filled + DIM + "\u25b1" * (width - filled)
 
 
 def main():
     try:
-        # BOM strippen — manche Shells pipen mit
-        data = json.loads(sys.stdin.read().lstrip("﻿"))
+        # Windows-Python nutzt sonst cp1252 und crasht an den Balkenzeichen
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        # BOM strippen - manche Shells pipen mit
+        data = json.loads(sys.stdin.read().lstrip("\ufeff"))
     except Exception:
         print("Claude")
         return
@@ -459,10 +464,10 @@ def render(data):
     free = max(0, limit - used)
 
     col = RED if pct >= 90 else YELLOW if pct >= 70 else GREEN
-    sep = f" {DIM}│{RESET} "
+    sep = f" {DIM}\u2502{RESET} "
 
     ctx_seg = (f"{col}{fmt_tokens(used)}{RESET}{DIM}/{fmt_limit(limit)}{RESET} "
-               f"{DIM}·{RESET} free {GREEN}{fmt_tokens(free)}{RESET}")
+               f"{DIM}\u00b7{RESET} free {GREEN}{fmt_tokens(free)}{RESET}")
     if pct >= 85:
         ctx_seg += f" {RED}Compact bald!{RESET}"
 
@@ -487,7 +492,7 @@ def render(data):
     if (cost.get("total_duration_ms") or 0) > 60_000:
         cost_bits.append(fmt_duration(cost["total_duration_ms"]) + " runtime")
     if cost_bits:
-        parts.append(f"{DIM}{' · '.join(cost_bits)}{RESET}")
+        parts.append(f"{DIM}{' \u00b7 '.join(cost_bits)}{RESET}")
 
     cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd")
     if cwd:
@@ -505,7 +510,7 @@ if __name__ == "__main__":
 '@
 
 $statuslinePs = @'
-# Claude Code Statusline (PowerShell) — Zero-Dependency-Variante fuer Windows.
+# Claude Code Statusline (PowerShell) - Zero-Dependency-Variante fuer Windows.
 # Funktions-Gegenstueck zu statusline.js (Node) und statusline.py (Python):
 # Modell, Context-Balken/%, used/limit, free, laufende Subagenten, Kosten,
 # Zeilen, Laufzeit, Ordner + Git-Branch. Kontrakt: niemals crashen.
@@ -536,8 +541,10 @@ function Format-Duration([double]$ms) {
 
 function Get-Bar([double]$pct, [int]$width) {
     # floor(x+0.5): identisches Runden wie JS-/Python-Variante
-    $filled = [math]::Max(0, [math]::Min($width, [math]::Floor($pct / 100 * $width + 0.5)))
-    return ('▰' * $filled) + $DIM + ('▱' * ($width - $filled))
+    $filled = [int][math]::Floor($pct / 100 * $width + 0.5)
+    if ($filled -lt 0) { $filled = 0 }
+    if ($filled -gt $width) { $filled = $width }
+    return (([string][char]0x25B0) * $filled) + $DIM + (([string][char]0x25B1) * ($width - $filled))
 }
 
 function Get-TranscriptUsed($data) {
@@ -567,7 +574,7 @@ function Get-TranscriptUsed($data) {
 
 function Get-Limit($data, [double]$used) {
     # 1M-Session erkennen, wenn context_window fehlt (aeltere Versionen /
-    # Resume-Edge-Cases) — sonst wuerde eine resumte 1M-Session /200k zeigen.
+    # Resume-Edge-Cases) - sonst wuerde eine resumte 1M-Session /200k zeigen.
     if ($used -gt 200000) { return 1000000 }
     if ($data.exceeds_200k_tokens) { return 1000000 }
     $modelStr = "$($data.model.id) $($data.model.display_name)"
@@ -642,14 +649,15 @@ try {
         $limit = Get-Limit $data $used
         $pct = if ($limit) { $used / $limit * 100 } else { 0 }
     }
-    if ([double]::IsNaN($pct) -or [double]::IsInfinity($pct)) { $pct = 0 }
-    $pct = [math]::Max(0, $pct)
-    $free = [math]::Max(0, $limit - $used)
+    # Kein [math]::Max(0, $x): PS waehlt dort den Int32-Overload und RUNDET
+    if ([double]::IsNaN($pct) -or [double]::IsInfinity($pct) -or $pct -lt 0) { $pct = 0 }
+    $free = $limit - $used
+    if ($free -lt 0) { $free = 0 }
 
     $col = if ($pct -ge 90) { $RED } elseif ($pct -ge 70) { $YELLOW } else { $GREEN }
-    $sep = " $DIM│$RESET "
+    $sep = " $DIM$([char]0x2502)$RESET "
 
-    $ctxSeg = "$col$(Format-Tokens $used)$RESET$DIM/$(Format-Limit $limit)$RESET $DIM·$RESET free $GREEN$(Format-Tokens $free)$RESET"
+    $ctxSeg = "$col$(Format-Tokens $used)$RESET$DIM/$(Format-Limit $limit)$RESET $DIM$([char]0xB7)$RESET free $GREEN$(Format-Tokens $free)$RESET"
     if ($pct -ge 85) { $ctxSeg += " ${RED}Compact bald!$RESET" }
 
     $pctText = [string]::Format($inv, '{0:0}', $pct)
@@ -669,7 +677,7 @@ try {
         $costBits += "$GREEN+$([int]$cost.total_lines_added)$RESET$DIM/$RESET$RED-$([int]$cost.total_lines_removed)$RESET$DIM lines$RESET"
     }
     if ($cost.total_duration_ms -gt 60000) { $costBits += "$(Format-Duration $cost.total_duration_ms) runtime" }
-    if ($costBits.Count) { $parts += "$DIM$($costBits -join ' · ')$RESET" }
+    if ($costBits.Count) { $parts += "$DIM$($costBits -join (' ' + [char]0xB7 + ' '))$RESET" }
 
     $cwd = if ($data.workspace.current_dir) { $data.workspace.current_dir } else { $data.cwd }
     if ($cwd) {
@@ -687,7 +695,6 @@ try {
 '@
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$utf8Bom = New-Object System.Text.UTF8Encoding($true)
 
 if ($node) {
     $scriptPath = Join-Path $claudeDir 'statusline.js'
@@ -701,9 +708,9 @@ if ($node) {
     $runtime = 'Python'
 } else {
     # Zero-Dependency-Fallback: PowerShell ist auf jedem Windows vorhanden.
-    # BOM noetig, damit Windows PowerShell 5.1 die UTF-8-Zeichen korrekt liest.
+    # Alle Skripte sind ASCII-only, daher ist kein BOM noetig.
     $scriptPath = Join-Path $claudeDir 'statusline.ps1'
-    [System.IO.File]::WriteAllText($scriptPath, $statuslinePs, $utf8Bom)
+    [System.IO.File]::WriteAllText($scriptPath, $statuslinePs, $utf8NoBom)
     $cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $claudeDirFwd + '/statusline.ps1"'
     $runtime = 'PowerShell'
 }

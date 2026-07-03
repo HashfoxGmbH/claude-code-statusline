@@ -176,13 +176,18 @@ def bar(pct, width=10):
     # floor(x+0.5) statt round(): identisches Runden wie die JS-Variante
     # (Python rundet halbe Werte zur geraden Zahl, JS nicht)
     filled = max(0, min(width, int(pct / 100 * width + 0.5)))
-    return "▰" * filled + DIM + "▱" * (width - filled)
+    return "\u25b0" * filled + DIM + "\u25b1" * (width - filled)
 
 
 def main():
     try:
-        # BOM strippen — manche Shells pipen mit
-        data = json.loads(sys.stdin.read().lstrip("﻿"))
+        # Windows-Python nutzt sonst cp1252 und crasht an den Balkenzeichen
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        # BOM strippen - manche Shells pipen mit
+        data = json.loads(sys.stdin.read().lstrip("\ufeff"))
     except Exception:
         print("Claude")
         return
@@ -221,10 +226,10 @@ def render(data):
     free = max(0, limit - used)
 
     col = RED if pct >= 90 else YELLOW if pct >= 70 else GREEN
-    sep = f" {DIM}│{RESET} "
+    sep = f" {DIM}\u2502{RESET} "
 
     ctx_seg = (f"{col}{fmt_tokens(used)}{RESET}{DIM}/{fmt_limit(limit)}{RESET} "
-               f"{DIM}·{RESET} free {GREEN}{fmt_tokens(free)}{RESET}")
+               f"{DIM}\u00b7{RESET} free {GREEN}{fmt_tokens(free)}{RESET}")
     if pct >= 85:
         ctx_seg += f" {RED}Compact bald!{RESET}"
 
@@ -249,7 +254,7 @@ def render(data):
     if (cost.get("total_duration_ms") or 0) > 60_000:
         cost_bits.append(fmt_duration(cost["total_duration_ms"]) + " runtime")
     if cost_bits:
-        parts.append(f"{DIM}{' · '.join(cost_bits)}{RESET}")
+        parts.append(f"{DIM}{' \u00b7 '.join(cost_bits)}{RESET}")
 
     cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd")
     if cwd:
@@ -305,7 +310,7 @@ function fmtLimit(n) {
 }
 
 function readTail(file, maxBytes) {
-  // Nur das Dateiende lesen — Transcripts werden viele MB gross,
+  // Nur das Dateiende lesen - Transcripts werden viele MB gross,
   // die Statusline laeuft alle paar hundert ms.
   const fd = fs.openSync(file, 'r');
   try {
@@ -417,13 +422,13 @@ function fmtDuration(ms) {
 function bar(pct, width) {
   // floor(x+0.5) statt Math.round: identisches Runden wie die Python-Variante
   const filled = Math.max(0, Math.min(width, Math.floor((pct / 100) * width + 0.5)));
-  return '▰'.repeat(filled) + DIM + '▱'.repeat(width - filled);
+  return '\u25B0'.repeat(filled) + DIM + '\u25B1'.repeat(width - filled);
 }
 
 function main() {
   let data = {};
   try {
-    // BOM strippen — manche Shells (Windows PowerShell 5.1) pipen mit
+    // BOM strippen - manche Shells (Windows PowerShell 5.1) pipen mit
     const raw = fs.readFileSync(0, 'utf8');
     data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
   } catch {
@@ -465,9 +470,9 @@ function render(data) {
   const free = Math.max(0, limit - used);
 
   const col = pct >= 90 ? RED : pct >= 70 ? YELLOW : GREEN;
-  const sep = ` ${DIM}│${RESET} `;
+  const sep = ` ${DIM}\u2502${RESET} `;
 
-  let ctxSeg = `${col}${fmtTokens(used)}${RESET}${DIM}/${fmtLimit(limit)}${RESET} ${DIM}·${RESET} free ${GREEN}${fmtTokens(free)}${RESET}`;
+  let ctxSeg = `${col}${fmtTokens(used)}${RESET}${DIM}/${fmtLimit(limit)}${RESET} ${DIM}\u00B7${RESET} free ${GREEN}${fmtTokens(free)}${RESET}`;
   if (pct >= 85) ctxSeg += ` ${RED}Compact bald!${RESET}`;
 
   const parts = [
@@ -488,7 +493,7 @@ function render(data) {
     costBits.push(`${GREEN}+${cost.total_lines_added || 0}${RESET}${DIM}/${RESET}${RED}-${cost.total_lines_removed || 0}${RESET}${DIM} lines${RESET}`);
   }
   if (cost.total_duration_ms > 60_000) costBits.push(fmtDuration(cost.total_duration_ms) + ' runtime');
-  if (costBits.length) parts.push(`${DIM}${costBits.join(' · ')}${RESET}`);
+  if (costBits.length) parts.push(`${DIM}${costBits.join(' \u00B7 ')}${RESET}`);
 
   const cwd = (data.workspace && data.workspace.current_dir) || data.cwd;
   if (cwd) {

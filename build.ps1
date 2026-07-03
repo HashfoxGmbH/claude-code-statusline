@@ -46,7 +46,6 @@ __PS__
 <HSCLOSE>
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$utf8Bom = New-Object System.Text.UTF8Encoding($true)
 
 if ($node) {
     $scriptPath = Join-Path $claudeDir 'statusline.js'
@@ -60,9 +59,9 @@ if ($node) {
     $runtime = 'Python'
 } else {
     # Zero-Dependency-Fallback: PowerShell ist auf jedem Windows vorhanden.
-    # BOM noetig, damit Windows PowerShell 5.1 die UTF-8-Zeichen korrekt liest.
+    # Alle Skripte sind ASCII-only, daher ist kein BOM noetig.
     $scriptPath = Join-Path $claudeDir 'statusline.ps1'
-    [System.IO.File]::WriteAllText($scriptPath, $statuslinePs, $utf8Bom)
+    [System.IO.File]::WriteAllText($scriptPath, $statuslinePs, $utf8NoBom)
     $cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $claudeDirFwd + '/statusline.ps1"'
     $runtime = 'PowerShell'
 }
@@ -251,10 +250,11 @@ echo "Fertig. Neue Claude-Code-Sessions zeigen die Statusline an; laufende nach 
 $ps1 = $ps1Template.Replace('__JS__', $js).Replace('__PY__', $py).Replace('__PS__', $ps).Replace('<HSOPEN>', "@'").Replace('<HSCLOSE>', "'@")
 $sh = $shTemplate.Replace('__PY__', $py).Replace('__JS__', $js)
 
-# install.ps1 MIT BOM (PowerShell 5.1 braucht BOM fuer UTF-8-Skripte),
-# install.sh OHNE BOM und mit LF-Zeilenenden (bash scheitert sonst).
-[System.IO.File]::WriteAllText("$root\install.ps1", $ps1, [System.Text.Encoding]::UTF8)
+# Alles ASCII-only und OHNE BOM: install.ps1 funktioniert so identisch via
+# "-File" (PS 5.1/7) UND via "irm | iex" (BOM wuerde iex die erste Zeile
+# zerlegen); install.sh braucht LF-Zeilenenden (bash scheitert an CRLF).
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText("$root\install.ps1", $ps1, $utf8NoBom)
 [System.IO.File]::WriteAllText("$root\install.sh", (($sh -replace "`r`n", "`n") + "`n"), $utf8NoBom)
 
 Write-Host "Generiert: install.ps1 ($([math]::Round((Get-Item "$root\install.ps1").Length/1kb,1)) KB), install.sh ($([math]::Round((Get-Item "$root\install.sh").Length/1kb,1)) KB)"
