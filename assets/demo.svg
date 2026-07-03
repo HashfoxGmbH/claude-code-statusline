@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="150" viewBox="0 0 980 150" role="img" aria-label="Claude Code statusline demo">
+  <defs>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#161b22"/>
+      <stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="978" height="148" rx="12" fill="url(#glow)" stroke="#30363d"/>
+  <!-- title bar -->
+  <circle cx="26" cy="24" r="6" fill="#ff5f57"/>
+  <circle cx="46" cy="24" r="6" fill="#febc2e"/>
+  <circle cx="66" cy="24" r="6" fill="#28c840"/>
+  <text x="490" y="29" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" fill="#8b949e" text-anchor="middle">Claude Code</text>
+  <!-- input box -->
+  <rect x="24" y="52" width="932" height="40" rx="8" fill="#0d1117" stroke="#30363d"/>
+  <text x="40" y="77" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" fill="#e6edf3">&#62; <tspan fill="#8b949e">Ask Claude anything&#8230;</tspan><tspan fill="#e6edf3">&#9612;</tspan></text>
+  <!-- statusline -->
+  <text x="40" y="122" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14.5" fill="#e6edf3">Fable 5 <tspan fill="#484f58">&#9474;</tspan> <tspan fill="#3fb950">&#9648;&#9648;&#9649;&#9649;&#9649;&#9649;&#9649;&#9649;&#9649;&#9649; 25%</tspan> <tspan fill="#484f58">&#9474;</tspan> <tspan fill="#3fb950">246.0k</tspan><tspan fill="#8b949e">/1M &#183; free</tspan> <tspan fill="#3fb950">754.0k</tspan> <tspan fill="#484f58">&#9474;</tspan> <tspan fill="#56d4dd">Agents: 2</tspan> <tspan fill="#484f58">&#9474;</tspan> <tspan fill="#8b949e">$1.23 &#183; </tspan><tspan fill="#3fb950">+230</tspan><tspan fill="#8b949e">/</tspan><tspan fill="#f85149">-57</tspan><tspan fill="#8b949e"> lines &#183; 2h21m runtime</tspan> <tspan fill="#484f58">&#9474;</tspan> my-project <tspan fill="#56d4dd">(main)</tspan></text>
+</svg>

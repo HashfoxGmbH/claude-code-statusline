@@ -1,0 +1,35 @@
+{
+  "name": "claude-code-statusline",
+  "version": "1.0.0",
+  "description": "Fast, resume-safe statusline for Claude Code: model, context usage bar, free tokens, running subagents, session cost and git branch. Zero required dependencies on Windows.",
+  "bin": {
+    "claude-code-statusline": "bin/install.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "install.ps1",
+    "install.sh"
+  ],
+  "keywords": [
+    "claude-code",
+    "claude",
+    "statusline",
+    "anthropic",
+    "cli",
+    "context-window"
+  ],
+  "author": "Christopher Wicha <christopherwicha@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/USERNAME/claude-code-statusline.git"
+  },
+  "homepage": "https://github.com/USERNAME/claude-code-statusline#readme",
+  "bugs": {
+    "url": "https://github.com/USERNAME/claude-code-statusline/issues"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
