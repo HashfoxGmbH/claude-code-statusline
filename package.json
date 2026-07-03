@@ -23,11 +23,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/USERNAME/claude-code-statusline.git"
+    "url": "git+https://github.com/HashfoxGmbH/claude-code-statusline.git"
   },
-  "homepage": "https://github.com/USERNAME/claude-code-statusline#readme",
+  "homepage": "https://github.com/HashfoxGmbH/claude-code-statusline#readme",
   "bugs": {
-    "url": "https://github.com/USERNAME/claude-code-statusline/issues"
+    "url": "https://github.com/HashfoxGmbH/claude-code-statusline/issues"
   },
   "engines": {
     "node": ">=16"

@@ -6,7 +6,7 @@
 # sonst die reine PowerShell-Variante (auf jedem Windows verfuegbar).
 #
 # Nutzung:  powershell -ExecutionPolicy Bypass -File install.ps1
-#   oder:   irm <RAW-URL>/install.ps1 | iex
+#   oder:   irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
 
 $claudeDir = Join-Path $env:USERPROFILE '.claude'

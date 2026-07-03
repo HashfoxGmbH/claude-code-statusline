@@ -21,7 +21,7 @@ $ps1Template = @'
 # sonst die reine PowerShell-Variante (auf jedem Windows verfuegbar).
 #
 # Nutzung:  powershell -ExecutionPolicy Bypass -File install.ps1
-#   oder:   irm <RAW-URL>/install.ps1 | iex
+#   oder:   irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
 
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
@@ -166,7 +166,7 @@ $shTemplate = @'
 # Zeigt Modell, Context-Verbrauch (%, Balken, free), laufende Subagenten,
 # Kosten, Zeilen und Laufzeit unter der Eingabezeile jeder Claude-Code-Session.
 # Nutzung:  bash install.sh
-#   oder:   curl -fsSL <RAW-URL>/install.sh | bash
+#   oder:   curl -fsSL https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.sh | bash
 set -euo pipefail
 
 CLAUDE_DIR="$HOME/.claude"

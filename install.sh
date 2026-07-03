@@ -3,7 +3,7 @@
 # Zeigt Modell, Context-Verbrauch (%, Balken, free), laufende Subagenten,
 # Kosten, Zeilen und Laufzeit unter der Eingabezeile jeder Claude-Code-Session.
 # Nutzung:  bash install.sh
-#   oder:   curl -fsSL <RAW-URL>/install.sh | bash
+#   oder:   curl -fsSL https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.sh | bash
 set -euo pipefail
 
 CLAUDE_DIR="$HOME/.claude"

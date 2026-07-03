@@ -20,13 +20,13 @@
 **Windows** (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/USERNAME/claude-code-statusline/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1 | iex
 ```
 
 **Linux / WSL / macOS**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/USERNAME/claude-code-statusline/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.sh | bash
 ```
 
 **npm / npx**:
