@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-statusline",
+  "name": "@hashox/claude-code-statusline",
   "version": "1.0.0",
   "description": "Fast, resume-safe statusline for Claude Code: model, context usage bar, free tokens, running subagents, session cost and git branch. Zero required dependencies on Windows.",
   "bin": {
