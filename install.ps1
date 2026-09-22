@@ -44,16 +44,27 @@ const YELLOW = '\x1b[33m';
 const RED = '\x1b[31m';
 const CYAN = '\x1b[36m';
 
+function fixed(x, digits, unit = 1) {
+  // x/unit mit `digits` Nachkommastellen, halbe Werte aufgerundet. Erst auf
+  // eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst bauen:
+  // Python- und .NET-Formatierung runden halbe Werte zur geraden Zahl, so
+  // zeigen alle drei Varianten exakt dieselben Werte.
+  const v = Math.max(0, Math.floor((x * 10 ** digits + unit / 2) / unit));
+  const s = String(v).padStart(digits + 1, '0');
+  return digits ? s.slice(0, -digits) + '.' + s.slice(-digits) : s;
+}
+
 function fmtTokens(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
-  return String(Math.round(n));
+  // Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+  if (n >= 999_950) return fixed(n, 1, 1_000_000) + 'M';
+  if (n >= 999.5) return fixed(n, 1, 1000) + 'k';
+  return fixed(n, 0);
 }
 
 function fmtLimit(n) {
-  if (n >= 1_000_000) return Math.round(n / 1_000_000) + 'M';
-  if (n >= 1000) return Math.round(n / 1000) + 'k';
-  return String(Math.round(n));
+  if (n >= 999_500) return fixed(n, 0, 1_000_000) + 'M';
+  if (n >= 999.5) return fixed(n, 0, 1000) + 'k';
+  return fixed(n, 0);
 }
 
 function readTail(file, maxBytes) {
@@ -104,7 +115,8 @@ function detectLimit(data, used) {
   if (/\[1m\]/i.test(modelStr)) return 1_000_000;
   try {
     const settingsPath = path.join(require('os').homedir(), '.claude', 'settings.json');
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const rawSettings = fs.readFileSync(settingsPath, 'utf8');
+    const settings = JSON.parse(rawSettings.charCodeAt(0) === 0xFEFF ? rawSettings.slice(1) : rawSettings);
     if (typeof settings.model === 'string' && /\[1m\]/i.test(settings.model)) {
       return 1_000_000;
     }
@@ -178,6 +190,7 @@ function main() {
     // BOM strippen - manche Shells (Windows PowerShell 5.1) pipen mit
     const raw = fs.readFileSync(0, 'utf8');
     data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('kein JSON-Objekt');
   } catch {
     process.stdout.write('Claude\n');
     return;
@@ -191,9 +204,24 @@ function main() {
   }
 }
 
+function modeSuffix(data) {
+  // Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
+  // thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+  let out = '';
+  const effort = data.effort;
+  if (effort && typeof effort.level === 'string' && effort.level) {
+    out += ` ${DIM}\u00B7${RESET} ${effort.level}`;
+  }
+  const thinking = data.thinking;
+  if (thinking && thinking.enabled === false) out += ` ${DIM}\u00B7 thinking off${RESET}`;
+  if (data.fast_mode === true) out += ` ${YELLOW}\u26A1${RESET}`;
+  return out;
+}
+
 function render(data) {
   const model = data.model || {};
-  const name = model.display_name || model.id || 'Claude';
+  let name = model.display_name || model.id || 'Claude';
+  try { name += modeSuffix(data); } catch (e) { /* nur Name */ }
 
   let used, limit, pct;
   const cw = data.context_window || {};
@@ -224,7 +252,7 @@ function render(data) {
 
   const parts = [
     `${name}`,
-    `${col}${bar(pct, 10)}${RESET} ${col}${pct.toFixed(0)}%${RESET}`,
+    `${col}${bar(pct, 10)}${RESET} ${col}${fixed(pct, 0)}%${RESET}`,
     ctxSeg,
   ];
 
@@ -235,7 +263,7 @@ function render(data) {
 
   const cost = data.cost || {};
   const costBits = [];
-  if (cost.total_cost_usd > 0) costBits.push('$' + cost.total_cost_usd.toFixed(2));
+  if (cost.total_cost_usd > 0) costBits.push('$' + fixed(cost.total_cost_usd, 2));
   if (cost.total_lines_added || cost.total_lines_removed) {
     costBits.push(`${GREEN}+${cost.total_lines_added || 0}${RESET}${DIM}/${RESET}${RED}-${cost.total_lines_removed || 0}${RESET}${DIM} lines${RESET}`);
   }
@@ -272,26 +300,39 @@ Assistant-Nachricht der Hauptkette aus dem Transcript, Subagenten
 
 Gegenstueck zu %USERPROFILE%\\.claude\\statusline.js auf der Windows-Seite.
 """
-import sys, json, os
+import sys, json, os, math
 
 RESET, DIM = "\033[0m", "\033[2m"
 GREEN, YELLOW, RED, CYAN = "\033[32m", "\033[33m", "\033[31m", "\033[36m"
 
 
+def fixed(x, digits, unit=1):
+    """x/unit mit `digits` Nachkommastellen, halbe Werte aufgerundet.
+
+    Erst auf eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst
+    bauen: Die Format-Rundung von Python und .NET geht bei halben Werten zur
+    geraden Zahl (0.5 -> "0", 1.25 -> "1.2"), JS toFixed nicht. So zeigen
+    alle drei Varianten exakt dieselben Werte."""
+    v = max(0, int(math.floor((x * 10 ** digits + unit / 2) / unit)))
+    s = str(v).zfill(digits + 1)
+    return s[:-digits] + "." + s[-digits:] if digits else s
+
+
 def fmt_tokens(n):
-    if n >= 1_000_000:
-        return f"{n/1_000_000:.1f}M"
-    if n >= 1000:
-        return f"{n/1000:.1f}k"
-    return str(int(n))
+    # Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+    if n >= 999_950:
+        return fixed(n, 1, 1_000_000) + "M"
+    if n >= 999.5:
+        return fixed(n, 1, 1000) + "k"
+    return fixed(n, 0)
 
 
 def fmt_limit(n):
-    if n >= 1_000_000:
-        return f"{n/1_000_000:.0f}M"
-    if n >= 1000:
-        return f"{n/1000:.0f}k"
-    return str(int(n))
+    if n >= 999_500:
+        return fixed(n, 0, 1_000_000) + "M"
+    if n >= 999.5:
+        return fixed(n, 0, 1000) + "k"
+    return fixed(n, 0)
 
 
 TAIL_BYTES = 512 * 1024  # Transcripts werden viele MB gross; nur Ende lesen
@@ -320,9 +361,9 @@ def from_transcript(data):
                 u = obj.get("message", {}).get("usage")
                 if not u:
                     continue
-                used = (u.get("input_tokens", 0)
-                        + u.get("cache_read_input_tokens", 0)
-                        + u.get("cache_creation_input_tokens", 0))
+                used = ((u.get("input_tokens") or 0)
+                        + (u.get("cache_read_input_tokens") or 0)
+                        + (u.get("cache_creation_input_tokens") or 0))
         except Exception:
             pass
     return used
@@ -342,7 +383,7 @@ def detect_limit(data, used):
         return 1_000_000
     try:
         settings_path = os.path.expanduser("~/.claude/settings.json")
-        with open(settings_path) as f:
+        with open(settings_path, encoding="utf-8-sig") as f:
             settings = json.load(f)
         if "[1m]" in str(settings.get("model", "")).lower():
             return 1_000_000
@@ -360,11 +401,13 @@ def git_branch(cwd):
             if os.path.exists(git_path):
                 head_file = os.path.join(git_path, "HEAD")
                 if os.path.isfile(git_path):  # Worktree: .git ist Datei
-                    gitdir = open(git_path).read().split("gitdir:")[-1].strip()
+                    with open(git_path, encoding="utf-8") as f:
+                        gitdir = f.read().split("gitdir:")[-1].strip()
                     if not os.path.isabs(gitdir):
                         gitdir = os.path.join(d, gitdir)
                     head_file = os.path.join(gitdir, "HEAD")
-                head = open(head_file).read().strip()
+                with open(head_file, encoding="utf-8") as f:
+                    head = f.read().strip()
                 if head.startswith("ref: refs/heads/"):
                     return head[len("ref: refs/heads/"):]
                 return head[:7]
@@ -425,7 +468,12 @@ def main():
         pass
     try:
         # BOM strippen - manche Shells pipen mit
-        data = json.loads(sys.stdin.read().lstrip("\ufeff"))
+        # Bytes lesen und selbst als UTF-8 dekodieren: Windows-Python nutzt fuer
+        # stdin sonst cp1252 und zerlegt Umlaute in Pfaden (Ordnername, Git).
+        # utf-8-sig strippt zugleich ein BOM, das manche Shells mitpipen.
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
+        if not isinstance(data, dict):
+            raise ValueError("kein JSON-Objekt")
     except Exception:
         print("Claude")
         return
@@ -437,9 +485,28 @@ def main():
         print("Claude")
 
 
+def mode_suffix(data):
+    # Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
+    # thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+    out = ""
+    effort = data.get("effort")
+    if isinstance(effort, dict) and isinstance(effort.get("level"), str) and effort["level"]:
+        out += f" {DIM}\u00b7{RESET} {effort['level']}"
+    thinking = data.get("thinking")
+    if isinstance(thinking, dict) and thinking.get("enabled") is False:
+        out += f" {DIM}\u00b7 thinking off{RESET}"
+    if data.get("fast_mode") is True:
+        out += f" {YELLOW}\u26a1{RESET}"
+    return out
+
+
 def render(data):
     model = data.get("model") or {}
     name = model.get("display_name") or model.get("id") or "Claude"
+    try:
+        name += mode_suffix(data)
+    except Exception:
+        pass
 
     cw = data.get("context_window") or {}
     size = cw.get("context_window_size")
@@ -447,9 +514,9 @@ def render(data):
         used = cw.get("total_input_tokens")
         if used is None:
             cu = cw.get("current_usage") or {}
-            used = (cu.get("input_tokens", 0)
-                    + cu.get("cache_read_input_tokens", 0)
-                    + cu.get("cache_creation_input_tokens", 0))
+            used = ((cu.get("input_tokens") or 0)
+                    + (cu.get("cache_read_input_tokens") or 0)
+                    + (cu.get("cache_creation_input_tokens") or 0))
         limit = size
         pct = cw.get("used_percentage")
         if pct is None:
@@ -473,7 +540,7 @@ def render(data):
 
     parts = [
         name,
-        f"{col}{bar(pct)}{RESET} {col}{pct:.0f}%{RESET}",
+        f"{col}{bar(pct)}{RESET} {col}{fixed(pct, 0)}%{RESET}",
         ctx_seg,
     ]
 
@@ -484,7 +551,7 @@ def render(data):
     cost = data.get("cost") or {}
     cost_bits = []
     if (cost.get("total_cost_usd") or 0) > 0:
-        cost_bits.append(f"${cost['total_cost_usd']:.2f}")
+        cost_bits.append("$" + fixed(cost["total_cost_usd"], 2))
     added = cost.get("total_lines_added") or 0
     removed = cost.get("total_lines_removed") or 0
     if added or removed:
@@ -492,7 +559,9 @@ def render(data):
     if (cost.get("total_duration_ms") or 0) > 60_000:
         cost_bits.append(fmt_duration(cost["total_duration_ms"]) + " runtime")
     if cost_bits:
-        parts.append(f"{DIM}{' \u00b7 '.join(cost_bits)}{RESET}")
+        # Join ausserhalb des f-Strings: Backslash im Ausdruck erst ab Python 3.12 erlaubt
+        joined = " \u00b7 ".join(cost_bits)
+        parts.append(f"{DIM}{joined}{RESET}")
 
     cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd")
     if cwd:
@@ -521,16 +590,29 @@ $E = [char]27
 $RESET = "$E[0m"; $DIM = "$E[2m"; $GREEN = "$E[32m"
 $YELLOW = "$E[33m"; $RED = "$E[31m"; $CYAN = "$E[36m"
 
+function Format-Fixed([double]$x, [int]$digits, [double]$unit = 1) {
+    # x/unit mit $digits Nachkommastellen, halbe Werte aufgerundet. Erst auf
+    # eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst bauen:
+    # .NET-Formate runden halbe Werte zur geraden Zahl ('F') bzw. nach 15
+    # Stellen ('0'), so zeigen alle drei Varianten exakt dieselben Werte.
+    $v = [math]::Floor(($x * [math]::Pow(10, $digits) + $unit / 2) / $unit)
+    if ($v -lt 0) { $v = 0 }
+    $s = $v.ToString('F0', $inv).PadLeft($digits + 1, '0')
+    if ($digits -gt 0) { return $s.Substring(0, $s.Length - $digits) + '.' + $s.Substring($s.Length - $digits) }
+    return $s
+}
+
 function Format-Tokens([double]$n) {
-    if ($n -ge 1000000) { return [string]::Format($inv, '{0:0.0}M', $n / 1000000) }
-    if ($n -ge 1000) { return [string]::Format($inv, '{0:0.0}k', $n / 1000) }
-    return [string][math]::Round($n)
+    # Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+    if ($n -ge 999950) { return (Format-Fixed $n 1 1000000) + 'M' }
+    if ($n -ge 999.5) { return (Format-Fixed $n 1 1000) + 'k' }
+    return Format-Fixed $n 0
 }
 
 function Format-Limit([double]$n) {
-    if ($n -ge 1000000) { return [string]::Format($inv, '{0:0}M', $n / 1000000) }
-    if ($n -ge 1000) { return [string]::Format($inv, '{0:0}k', $n / 1000) }
-    return [string][math]::Round($n)
+    if ($n -ge 999500) { return (Format-Fixed $n 0 1000000) + 'M' }
+    if ($n -ge 999.5) { return (Format-Fixed $n 0 1000) + 'k' }
+    return Format-Fixed $n 0
 }
 
 function Format-Duration([double]$ms) {
@@ -551,7 +633,7 @@ function Get-TranscriptUsed($data) {
     # Fallback: used_tokens aus dem Transcript-Ende (letzte 512 KB) ableiten.
     $used = 0
     $tpath = $data.transcript_path
-    if (-not $tpath -or -not (Test-Path $tpath)) { return 0 }
+    if (-not $tpath -or -not (Test-Path -LiteralPath $tpath)) { return 0 }
     try {
         $fs = [System.IO.File]::Open($tpath, 'Open', 'Read', 'ReadWrite')
         try {
@@ -580,7 +662,7 @@ function Get-Limit($data, [double]$used) {
     $modelStr = "$($data.model.id) $($data.model.display_name)"
     if ($modelStr -match '\[1m\]') { return 1000000 }
     try {
-        $settings = Get-Content (Join-Path $env:USERPROFILE '.claude\settings.json') -Raw | ConvertFrom-Json
+        $settings = Get-Content -LiteralPath (Join-Path $env:USERPROFILE '.claude\settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         if ("$($settings.model)" -match '\[1m\]') { return 1000000 }
     } catch { }
     return 200000
@@ -592,14 +674,14 @@ function Get-GitBranch([string]$cwd) {
         $dir = $cwd
         for ($i = 0; $i -lt 12 -and $dir; $i++) {
             $gitPath = Join-Path $dir '.git'
-            if (Test-Path $gitPath) {
+            if (Test-Path -LiteralPath $gitPath) {
                 $headFile = Join-Path $gitPath 'HEAD'
-                if (Test-Path $gitPath -PathType Leaf) {
-                    $gitdir = ((Get-Content $gitPath -Raw) -replace '^gitdir:\s*', '').Trim()
+                if (Test-Path -LiteralPath $gitPath -PathType Leaf) {
+                    $gitdir = ((Get-Content -LiteralPath $gitPath -Raw) -replace '^gitdir:\s*', '').Trim()
                     if (-not [System.IO.Path]::IsPathRooted($gitdir)) { $gitdir = Join-Path $dir $gitdir }
                     $headFile = Join-Path $gitdir 'HEAD'
                 }
-                $head = (Get-Content $headFile -Raw).Trim()
+                $head = (Get-Content -LiteralPath $headFile -Raw).Trim()
                 if ($head -match '^ref: refs/heads/(.+)$') { return $Matches[1] }
                 return $head.Substring(0, [math]::Min(7, $head.Length))
             }
@@ -618,20 +700,35 @@ function Get-ActiveAgents($data) {
         $tpath = $data.transcript_path
         if (-not $tpath) { return 0 }
         $dir = Join-Path ($tpath -replace '\.jsonl$', '') 'subagents'
-        if (-not (Test-Path $dir)) { return 0 }
+        if (-not (Test-Path -LiteralPath $dir)) { return 0 }
         $cutoff = (Get-Date).AddSeconds(-45)
-        return @(Get-ChildItem $dir -Filter 'agent-*.jsonl' | Where-Object { $_.LastWriteTime -gt $cutoff }).Count
+        return @(Get-ChildItem -LiteralPath $dir -Filter 'agent-*.jsonl' | Where-Object { $_.LastWriteTime -gt $cutoff }).Count
     } catch { return 0 }
 }
 
 try {
     try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+    # stdin ist UTF-8; ohne das liest Windows mit der OEM-Codepage und zerlegt
+    # Umlaute in Pfaden (Ordnername, Git-Suche).
+    try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
     $raw = [Console]::In.ReadToEnd()
     $raw = $raw.TrimStart([char]0xFEFF)
     $data = $raw | ConvertFrom-Json
+    if ($data -isnot [System.Management.Automation.PSCustomObject]) { throw 'kein JSON-Objekt' }
 
     $name = if ($data.model.display_name) { $data.model.display_name }
             elseif ($data.model.id) { $data.model.id } else { 'Claude' }
+    # Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
+    # thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+    try {
+        if ($data.effort -and $data.effort.level -is [string] -and $data.effort.level) {
+            $name = "$name $DIM$([char]0xB7)$RESET $($data.effort.level)"
+        }
+        if ($data.thinking -and $data.thinking.enabled -is [bool] -and -not $data.thinking.enabled) {
+            $name += " $DIM$([char]0xB7) thinking off$RESET"
+        }
+        if ($data.fast_mode -is [bool] -and $data.fast_mode) { $name += " $YELLOW$([char]0x26A1)$RESET" }
+    } catch { }
 
     $cw = $data.context_window
     if ($cw -and $cw.context_window_size) {
@@ -660,7 +757,7 @@ try {
     $ctxSeg = "$col$(Format-Tokens $used)$RESET$DIM/$(Format-Limit $limit)$RESET $DIM$([char]0xB7)$RESET free $GREEN$(Format-Tokens $free)$RESET"
     if ($pct -ge 85) { $ctxSeg += " ${RED}Compact bald!$RESET" }
 
-    $pctText = [string]::Format($inv, '{0:0}', $pct)
+    $pctText = Format-Fixed $pct 0
     $parts = @(
         $name,
         "$col$(Get-Bar $pct 10)$RESET $col$pctText%$RESET",
@@ -672,7 +769,7 @@ try {
 
     $cost = $data.cost
     $costBits = @()
-    if ($cost.total_cost_usd -gt 0) { $costBits += [string]::Format($inv, '${0:0.00}', $cost.total_cost_usd) }
+    if ($cost.total_cost_usd -gt 0) { $costBits += ('$' + (Format-Fixed $cost.total_cost_usd 2)) }
     if ($cost.total_lines_added -or $cost.total_lines_removed) {
         $costBits += "$GREEN+$([int]$cost.total_lines_added)$RESET$DIM/$RESET$RED-$([int]$cost.total_lines_removed)$RESET$DIM lines$RESET"
     }

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
  * Installer fuer die Claude-Code-Statusline via npx:
- *   npx claude-code-statusline
+ *   npx @hashox/claude-code-statusline
  *
  * Kopiert statusline.js nach ~/.claude/ und traegt sie in settings.json ein
  * (bestehende Einstellungen bleiben erhalten, Backup als settings.json.bak).
- * Wer npx nutzt, hat Node — daher wird immer die Node-Variante installiert.
+ * Wer npx nutzt, hat Node - daher wird immer die Node-Variante installiert.
  */
 'use strict';
 const fs = require('fs');

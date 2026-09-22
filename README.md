@@ -2,7 +2,7 @@
 
 # claude-code-statusline
 
-**A fast, resume-safe statusline for [Claude Code](https://code.claude.com) — model, context usage, free tokens, running subagents, cost & git branch. Zero required dependencies on Windows.**
+**A fast, resume-safe statusline for [Claude Code](https://code.claude.com) — model & thinking mode, context usage, free tokens, running subagents, cost & git branch. Zero required dependencies on Windows.**
 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL-blue)](#installation)
 [![Runtime](https://img.shields.io/badge/runtime-Node%20%7C%20Python%20%7C%20PowerShell-8A2BE2)](#how-the-installer-picks-a-runtime)
@@ -42,12 +42,15 @@ New Claude Code sessions show the statusline immediately; running sessions after
 ## What you see
 
 ```text
-Fable 5 │ ▰▰▱▱▱▱▱▱▱▱ 25% │ 246.0k/1M · free 754.0k │ Agents: 2 │ $1.23 · +230/-57 lines · 2h21m runtime │ my-project (main)
+Fable 5 · high │ ▰▰▱▱▱▱▱▱▱▱ 25% │ 246.0k/1M · free 754.0k │ Agents: 2 │ $1.23 · +230/-57 lines · 2h21m runtime │ my-project (main)
 ```
 
 | Segment | Meaning |
 |---|---|
 | `Fable 5` | Current model |
+| `· high` | Reasoning effort (`low` / `medium` / `high` / `xhigh` / `max`) — updates live on `/effort`; hidden when the model has no effort parameter |
+| `· thinking off` | Shown only when extended thinking is disabled |
+| `⚡` | Fast mode is on (hidden otherwise) |
 | `▰▰▱▱▱▱▱▱▱▱ 25%` | Context usage bar — **green** &lt; 70 %, **yellow** ≥ 70 %, **red** ≥ 90 % |
 | `246.0k/1M · free 754.0k` | Used / total context and remaining tokens; `Compact bald!` warning at ≥ 85 % |
 | `Agents: 2` | Subagents running **right now** (hidden when zero) |
@@ -62,10 +65,13 @@ Fable 5 │ ▰▰▱▱▱▱▱▱▱▱ 25% │ 246.0k/1M · free 754.0k │ 
 - **1M-context aware.** The fallback (older Claude Code versions) detects 1M sessions
   through four independent signals (`[1m]` model suffix, `exceeds_200k_tokens`,
   settings model, usage &gt; 200k) — no more bogus `/200k` after resuming a 1M session.
+- **Thinking mode at a glance.** Effort level, extended thinking and fast mode come straight
+  from the live session fields `effort.level`, `thinking.enabled` and `fast_mode`. Older Claude
+  Code versions without these fields simply show the model name as before.
 - **Live subagent counter.** Running agents continuously append to
   `<session>/subagents/agent-*.jsonl`; files written within the last 45 s count as active.
 - **Never crashes.** Every code path is guarded. Worst case, the statusline shows `Claude`
-  — never a stack trace, never a blank line. Hostile/malformed stdin is part of the test suite.
+  — never a stack trace, never a blank line, even on malformed or hostile stdin.
 - **Fast.** Reads only the last 512 KB of multi-MB transcripts, reads `.git/HEAD` directly
   instead of spawning `git`, strips the UTF-8 BOM some shells prepend.
 

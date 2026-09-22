@@ -9,16 +9,29 @@ $E = [char]27
 $RESET = "$E[0m"; $DIM = "$E[2m"; $GREEN = "$E[32m"
 $YELLOW = "$E[33m"; $RED = "$E[31m"; $CYAN = "$E[36m"
 
+function Format-Fixed([double]$x, [int]$digits, [double]$unit = 1) {
+    # x/unit mit $digits Nachkommastellen, halbe Werte aufgerundet. Erst auf
+    # eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst bauen:
+    # .NET-Formate runden halbe Werte zur geraden Zahl ('F') bzw. nach 15
+    # Stellen ('0'), so zeigen alle drei Varianten exakt dieselben Werte.
+    $v = [math]::Floor(($x * [math]::Pow(10, $digits) + $unit / 2) / $unit)
+    if ($v -lt 0) { $v = 0 }
+    $s = $v.ToString('F0', $inv).PadLeft($digits + 1, '0')
+    if ($digits -gt 0) { return $s.Substring(0, $s.Length - $digits) + '.' + $s.Substring($s.Length - $digits) }
+    return $s
+}
+
 function Format-Tokens([double]$n) {
-    if ($n -ge 1000000) { return [string]::Format($inv, '{0:0.0}M', $n / 1000000) }
-    if ($n -ge 1000) { return [string]::Format($inv, '{0:0.0}k', $n / 1000) }
-    return [string][math]::Round($n)
+    # Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+    if ($n -ge 999950) { return (Format-Fixed $n 1 1000000) + 'M' }
+    if ($n -ge 999.5) { return (Format-Fixed $n 1 1000) + 'k' }
+    return Format-Fixed $n 0
 }
 
 function Format-Limit([double]$n) {
-    if ($n -ge 1000000) { return [string]::Format($inv, '{0:0}M', $n / 1000000) }
-    if ($n -ge 1000) { return [string]::Format($inv, '{0:0}k', $n / 1000) }
-    return [string][math]::Round($n)
+    if ($n -ge 999500) { return (Format-Fixed $n 0 1000000) + 'M' }
+    if ($n -ge 999.5) { return (Format-Fixed $n 0 1000) + 'k' }
+    return Format-Fixed $n 0
 }
 
 function Format-Duration([double]$ms) {
@@ -39,7 +52,7 @@ function Get-TranscriptUsed($data) {
     # Fallback: used_tokens aus dem Transcript-Ende (letzte 512 KB) ableiten.
     $used = 0
     $tpath = $data.transcript_path
-    if (-not $tpath -or -not (Test-Path $tpath)) { return 0 }
+    if (-not $tpath -or -not (Test-Path -LiteralPath $tpath)) { return 0 }
     try {
         $fs = [System.IO.File]::Open($tpath, 'Open', 'Read', 'ReadWrite')
         try {
@@ -68,7 +81,7 @@ function Get-Limit($data, [double]$used) {
     $modelStr = "$($data.model.id) $($data.model.display_name)"
     if ($modelStr -match '\[1m\]') { return 1000000 }
     try {
-        $settings = Get-Content (Join-Path $env:USERPROFILE '.claude\settings.json') -Raw | ConvertFrom-Json
+        $settings = Get-Content -LiteralPath (Join-Path $env:USERPROFILE '.claude\settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         if ("$($settings.model)" -match '\[1m\]') { return 1000000 }
     } catch { }
     return 200000
@@ -80,14 +93,14 @@ function Get-GitBranch([string]$cwd) {
         $dir = $cwd
         for ($i = 0; $i -lt 12 -and $dir; $i++) {
             $gitPath = Join-Path $dir '.git'
-            if (Test-Path $gitPath) {
+            if (Test-Path -LiteralPath $gitPath) {
                 $headFile = Join-Path $gitPath 'HEAD'
-                if (Test-Path $gitPath -PathType Leaf) {
-                    $gitdir = ((Get-Content $gitPath -Raw) -replace '^gitdir:\s*', '').Trim()
+                if (Test-Path -LiteralPath $gitPath -PathType Leaf) {
+                    $gitdir = ((Get-Content -LiteralPath $gitPath -Raw) -replace '^gitdir:\s*', '').Trim()
                     if (-not [System.IO.Path]::IsPathRooted($gitdir)) { $gitdir = Join-Path $dir $gitdir }
                     $headFile = Join-Path $gitdir 'HEAD'
                 }
-                $head = (Get-Content $headFile -Raw).Trim()
+                $head = (Get-Content -LiteralPath $headFile -Raw).Trim()
                 if ($head -match '^ref: refs/heads/(.+)$') { return $Matches[1] }
                 return $head.Substring(0, [math]::Min(7, $head.Length))
             }
@@ -106,20 +119,35 @@ function Get-ActiveAgents($data) {
         $tpath = $data.transcript_path
         if (-not $tpath) { return 0 }
         $dir = Join-Path ($tpath -replace '\.jsonl$', '') 'subagents'
-        if (-not (Test-Path $dir)) { return 0 }
+        if (-not (Test-Path -LiteralPath $dir)) { return 0 }
         $cutoff = (Get-Date).AddSeconds(-45)
-        return @(Get-ChildItem $dir -Filter 'agent-*.jsonl' | Where-Object { $_.LastWriteTime -gt $cutoff }).Count
+        return @(Get-ChildItem -LiteralPath $dir -Filter 'agent-*.jsonl' | Where-Object { $_.LastWriteTime -gt $cutoff }).Count
     } catch { return 0 }
 }
 
 try {
     try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+    # stdin ist UTF-8; ohne das liest Windows mit der OEM-Codepage und zerlegt
+    # Umlaute in Pfaden (Ordnername, Git-Suche).
+    try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
     $raw = [Console]::In.ReadToEnd()
     $raw = $raw.TrimStart([char]0xFEFF)
     $data = $raw | ConvertFrom-Json
+    if ($data -isnot [System.Management.Automation.PSCustomObject]) { throw 'kein JSON-Objekt' }
 
     $name = if ($data.model.display_name) { $data.model.display_name }
             elseif ($data.model.id) { $data.model.id } else { 'Claude' }
+    # Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
+    # thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+    try {
+        if ($data.effort -and $data.effort.level -is [string] -and $data.effort.level) {
+            $name = "$name $DIM$([char]0xB7)$RESET $($data.effort.level)"
+        }
+        if ($data.thinking -and $data.thinking.enabled -is [bool] -and -not $data.thinking.enabled) {
+            $name += " $DIM$([char]0xB7) thinking off$RESET"
+        }
+        if ($data.fast_mode -is [bool] -and $data.fast_mode) { $name += " $YELLOW$([char]0x26A1)$RESET" }
+    } catch { }
 
     $cw = $data.context_window
     if ($cw -and $cw.context_window_size) {
@@ -148,7 +176,7 @@ try {
     $ctxSeg = "$col$(Format-Tokens $used)$RESET$DIM/$(Format-Limit $limit)$RESET $DIM$([char]0xB7)$RESET free $GREEN$(Format-Tokens $free)$RESET"
     if ($pct -ge 85) { $ctxSeg += " ${RED}Compact bald!$RESET" }
 
-    $pctText = [string]::Format($inv, '{0:0}', $pct)
+    $pctText = Format-Fixed $pct 0
     $parts = @(
         $name,
         "$col$(Get-Bar $pct 10)$RESET $col$pctText%$RESET",
@@ -160,7 +188,7 @@ try {
 
     $cost = $data.cost
     $costBits = @()
-    if ($cost.total_cost_usd -gt 0) { $costBits += [string]::Format($inv, '${0:0.00}', $cost.total_cost_usd) }
+    if ($cost.total_cost_usd -gt 0) { $costBits += ('$' + (Format-Fixed $cost.total_cost_usd 2)) }
     if ($cost.total_lines_added -or $cost.total_lines_removed) {
         $costBits += "$GREEN+$([int]$cost.total_lines_added)$RESET$DIM/$RESET$RED-$([int]$cost.total_lines_removed)$RESET$DIM lines$RESET"
     }

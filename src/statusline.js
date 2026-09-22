@@ -23,16 +23,27 @@ const YELLOW = '\x1b[33m';
 const RED = '\x1b[31m';
 const CYAN = '\x1b[36m';
 
+function fixed(x, digits, unit = 1) {
+  // x/unit mit `digits` Nachkommastellen, halbe Werte aufgerundet. Erst auf
+  // eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst bauen:
+  // Python- und .NET-Formatierung runden halbe Werte zur geraden Zahl, so
+  // zeigen alle drei Varianten exakt dieselben Werte.
+  const v = Math.max(0, Math.floor((x * 10 ** digits + unit / 2) / unit));
+  const s = String(v).padStart(digits + 1, '0');
+  return digits ? s.slice(0, -digits) + '.' + s.slice(-digits) : s;
+}
+
 function fmtTokens(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
-  return String(Math.round(n));
+  // Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+  if (n >= 999_950) return fixed(n, 1, 1_000_000) + 'M';
+  if (n >= 999.5) return fixed(n, 1, 1000) + 'k';
+  return fixed(n, 0);
 }
 
 function fmtLimit(n) {
-  if (n >= 1_000_000) return Math.round(n / 1_000_000) + 'M';
-  if (n >= 1000) return Math.round(n / 1000) + 'k';
-  return String(Math.round(n));
+  if (n >= 999_500) return fixed(n, 0, 1_000_000) + 'M';
+  if (n >= 999.5) return fixed(n, 0, 1000) + 'k';
+  return fixed(n, 0);
 }
 
 function readTail(file, maxBytes) {
@@ -83,7 +94,8 @@ function detectLimit(data, used) {
   if (/\[1m\]/i.test(modelStr)) return 1_000_000;
   try {
     const settingsPath = path.join(require('os').homedir(), '.claude', 'settings.json');
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const rawSettings = fs.readFileSync(settingsPath, 'utf8');
+    const settings = JSON.parse(rawSettings.charCodeAt(0) === 0xFEFF ? rawSettings.slice(1) : rawSettings);
     if (typeof settings.model === 'string' && /\[1m\]/i.test(settings.model)) {
       return 1_000_000;
     }
@@ -157,6 +169,7 @@ function main() {
     // BOM strippen - manche Shells (Windows PowerShell 5.1) pipen mit
     const raw = fs.readFileSync(0, 'utf8');
     data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('kein JSON-Objekt');
   } catch {
     process.stdout.write('Claude\n');
     return;
@@ -170,9 +183,24 @@ function main() {
   }
 }
 
+function modeSuffix(data) {
+  // Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
+  // thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+  let out = '';
+  const effort = data.effort;
+  if (effort && typeof effort.level === 'string' && effort.level) {
+    out += ` ${DIM}\u00B7${RESET} ${effort.level}`;
+  }
+  const thinking = data.thinking;
+  if (thinking && thinking.enabled === false) out += ` ${DIM}\u00B7 thinking off${RESET}`;
+  if (data.fast_mode === true) out += ` ${YELLOW}\u26A1${RESET}`;
+  return out;
+}
+
 function render(data) {
   const model = data.model || {};
-  const name = model.display_name || model.id || 'Claude';
+  let name = model.display_name || model.id || 'Claude';
+  try { name += modeSuffix(data); } catch (e) { /* nur Name */ }
 
   let used, limit, pct;
   const cw = data.context_window || {};
@@ -203,7 +231,7 @@ function render(data) {
 
   const parts = [
     `${name}`,
-    `${col}${bar(pct, 10)}${RESET} ${col}${pct.toFixed(0)}%${RESET}`,
+    `${col}${bar(pct, 10)}${RESET} ${col}${fixed(pct, 0)}%${RESET}`,
     ctxSeg,
   ];
 
@@ -214,7 +242,7 @@ function render(data) {
 
   const cost = data.cost || {};
   const costBits = [];
-  if (cost.total_cost_usd > 0) costBits.push('$' + cost.total_cost_usd.toFixed(2));
+  if (cost.total_cost_usd > 0) costBits.push('$' + fixed(cost.total_cost_usd, 2));
   if (cost.total_lines_added || cost.total_lines_removed) {
     costBits.push(`${GREEN}+${cost.total_lines_added || 0}${RESET}${DIM}/${RESET}${RED}-${cost.total_lines_removed || 0}${RESET}${DIM} lines${RESET}`);
   }
