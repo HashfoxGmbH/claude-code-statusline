@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Claude Code statusline: Modell + Context-Verbrauch + freie Tokens.
+"""Claude Code statusline (Python variant): model + thinking mode, context
+usage, free tokens, rate limits, running subagents, cost, folder + git branch.
 
-Primaerquelle ist das von Claude Code gelieferte stdin-Feld `context_window`
-(ab v2.1.x). Das ist:
-  - resume-fest (Wert kommt aus dem Live-Session-State, nicht aus dem Transcript),
-  - limit-korrekt (context_window_size kennt 200k vs. 1M exakt),
-  - subagenten-frei (nur der Haupt-Session-Context wird gezaehlt).
+The primary source is the stdin field `context_window` sent by Claude Code
+(v2.1.x+). It is:
+  - resume-safe (the value comes from the live session state, not the transcript),
+  - limit-correct (context_window_size knows 200k vs. 1M exactly),
+  - subagent-free (only the main session context is counted).
 
-Fallback (aeltere Claude-Code-Versionen ohne context_window): letzte
-Assistant-Nachricht der Hauptkette aus dem Transcript, Subagenten
-(isSidechain == true) uebersprungen.
+Fallback (older Claude Code versions without context_window): the last
+assistant message of the main chain from the transcript, subagents
+(isSidechain == true) skipped.
 
-Gegenstueck zu %USERPROFILE%\\.claude\\statusline.js auf der Windows-Seite.
+Behaviorally identical to statusline.js and statusline.ps1.
 """
 import sys, json, os, math
 
@@ -20,19 +21,19 @@ GREEN, YELLOW, RED, CYAN = "\033[32m", "\033[33m", "\033[31m", "\033[36m"
 
 
 def fixed(x, digits, unit=1):
-    """x/unit mit `digits` Nachkommastellen, halbe Werte aufgerundet.
+    """x/unit with `digits` decimals, halves rounded up.
 
-    Erst auf eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst
-    bauen: Die Format-Rundung von Python und .NET geht bei halben Werten zur
-    geraden Zahl (0.5 -> "0", 1.25 -> "1.2"), JS toFixed nicht. So zeigen
-    alle drei Varianten exakt dieselben Werte."""
+    Round to an integer first (floor(v + 0.5)), then build the string by hand:
+    Python and .NET format rounding sends halves to the even number
+    (0.5 -> "0", 1.25 -> "1.2"), JS toFixed does not. This keeps all three
+    variants identical."""
     v = max(0, int(math.floor((x * 10 ** digits + unit / 2) / unit)))
     s = str(v).zfill(digits + 1)
     return s[:-digits] + "." + s[-digits:] if digits else s
 
 
 def fmt_tokens(n):
-    # Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+    # Thresholds after rounding: 999950 is "1.0M", not "1000.0k"
     if n >= 999_950:
         return fixed(n, 1, 1_000_000) + "M"
     if n >= 999.5:
@@ -48,20 +49,16 @@ def fmt_limit(n):
     return fixed(n, 0)
 
 
-TAIL_BYTES = 512 * 1024  # Transcripts werden viele MB gross; nur Ende lesen
+TAIL_BYTES = 512 * 1024  # transcripts grow to many MB; read only the end
 
 
 def from_transcript(data):
-    """Fallback: used_tokens aus dem Transcript-Ende ableiten."""
+    """Fallback: derive used tokens from the end of the transcript."""
     used = 0
     tpath = data.get("transcript_path")
     if tpath and os.path.exists(tpath):
         try:
-            with open(tpath, "rb") as f:
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                f.seek(max(0, size - TAIL_BYTES))
-                text = f.read().decode("utf-8", errors="replace")
+            text = read_tail(tpath, TAIL_BYTES)
             for line in text.split("\n"):
                 if '"usage"' not in line:
                     continue
@@ -83,9 +80,8 @@ def from_transcript(data):
 
 
 def detect_limit(data, used):
-    """1M-Session erkennen, wenn context_window fehlt (aeltere Versionen /
-    Resume-Edge-Cases). Sonst wuerde eine resumte 1M-Session als /200k
-    angezeigt werden."""
+    """Detect a 1M session when context_window is missing (older versions /
+    resume edge cases). Otherwise a resumed 1M session would show /200k."""
     if used > 200_000:
         return 1_000_000
     if data.get("exceeds_200k_tokens"):
@@ -106,14 +102,14 @@ def detect_limit(data, used):
 
 
 def git_branch(cwd):
-    """`.git/HEAD` direkt lesen statt git zu spawnen (Statusline laeuft oft)."""
+    """Read `.git/HEAD` directly instead of spawning git (the statusline runs often)."""
     try:
         d = cwd
         for _ in range(12):
             git_path = os.path.join(d, ".git")
             if os.path.exists(git_path):
                 head_file = os.path.join(git_path, "HEAD")
-                if os.path.isfile(git_path):  # Worktree: .git ist Datei
+                if os.path.isfile(git_path):  # worktree: .git is a file
                     with open(git_path, encoding="utf-8") as f:
                         gitdir = f.read().split("gitdir:")[-1].strip()
                     if not os.path.isabs(gitdir):
@@ -133,11 +129,42 @@ def git_branch(cwd):
     return None
 
 
+def read_tail(path, max_bytes):
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        f.seek(max(0, size - max_bytes))
+        return f.read().decode("utf-8", errors="replace")
+
+
+def waiting_on_tool(path):
+    """Last message entry of a subagent transcript: assistant with tool_use =
+    waiting for a tool (e.g. a long build), user with tool_result = the model
+    is working on the next step. Either way nothing is written to the
+    transcript until it finishes, but the agent is still running."""
+    for line in reversed(read_tail(path, 64 * 1024).split("\n")):
+        if '"type"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") not in ("assistant", "user"):
+            continue
+        content = (obj.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            return False
+        want = "tool_use" if obj["type"] == "assistant" else "tool_result"
+        return any(isinstance(c, dict) and c.get("type") == want for c in content)
+    return False
+
+
 def active_agents(data):
-    """Laufende Subagenten: agent-*.jsonl unter <session>/subagents/, das in
-    den letzten 45s beschrieben wurde. Laufende Agenten appenden staendig an
-    ihr Transcript; fertige Dateien veralten sofort. Resume-fest, da der Pfad
-    direkt aus transcript_path abgeleitet wird."""
+    """Running subagents: agent-*.jsonl under <session>/subagents/. Active
+    means written within the last 45s (running agents append constantly), or
+    at most 10 min old and currently waiting on a tool or the next model reply
+    (10 min = the maximum Bash timeout). Resume-safe, because the path is
+    derived directly from transcript_path."""
     import time
     try:
         tpath = data.get("transcript_path")
@@ -152,11 +179,56 @@ def active_agents(data):
         for f in os.listdir(subdir):
             if not (f.startswith("agent-") and f.endswith(".jsonl")):
                 continue
-            if now - os.path.getmtime(os.path.join(subdir, f)) < 45:
+            path = os.path.join(subdir, f)
+            age = now - os.path.getmtime(path)
+            if age < 45:
                 count += 1
+            elif age < 600:
+                try:
+                    if waiting_on_tool(path):
+                        count += 1
+                except Exception:
+                    pass
         return count
     except Exception:
         return 0
+
+
+def fmt_reset(sec):
+    """Time until a limit resets: 2d4h / 1h05m / 12m"""
+    minutes = max(0, int(sec // 60))
+    if minutes >= 1440:
+        return f"{minutes // 1440}d{(minutes % 1440) // 60}h"
+    if minutes >= 60:
+        return f"{minutes // 60}h{minutes % 60:02d}m"
+    return f"{minutes}m"
+
+
+def is_num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x and abs(x) != float("inf")
+
+
+def rate_limits(data):
+    """Rate limits (Pro/Max, or a gateway spend limit): "5h 23% . 7d 41%".
+    From 70 % on with the time until reset. Missing windows are skipped."""
+    import time
+    rl = data.get("rate_limits")
+    if not isinstance(rl, dict):
+        return ""
+    now = time.time()
+    bits = []
+    for key, label in (("five_hour", "5h"), ("seven_day", "7d"), ("spend_limit", "spend")):
+        w = rl.get(key)
+        if not isinstance(w, dict) or not is_num(w.get("used_percentage")):
+            continue
+        pct = max(0, w["used_percentage"])
+        col = RED if pct >= 90 else YELLOW if pct >= 70 else GREEN
+        bit = f"{DIM}{label}{RESET} {col}{fixed(pct, 0)}%{RESET}"
+        reset = w.get("resets_at")
+        if pct >= 70 and is_num(reset) and reset > now:
+            bit += f" {DIM}({fmt_reset(reset - now)}){RESET}"
+        bits.append(bit)
+    return f" {DIM}\u00b7{RESET} ".join(bits)
 
 
 def fmt_duration(ms):
@@ -167,26 +239,25 @@ def fmt_duration(ms):
 
 
 def bar(pct, width=10):
-    # floor(x+0.5) statt round(): identisches Runden wie die JS-Variante
-    # (Python rundet halbe Werte zur geraden Zahl, JS nicht)
+    # floor(x+0.5) instead of round(): rounds exactly like the JS variant
+    # (Python rounds halves to even, JS does not)
     filled = max(0, min(width, int(pct / 100 * width + 0.5)))
     return "\u25b0" * filled + DIM + "\u25b1" * (width - filled)
 
 
 def main():
     try:
-        # Windows-Python nutzt sonst cp1252 und crasht an den Balkenzeichen
+        # otherwise Windows Python uses cp1252 and crashes on the bar characters
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
     try:
-        # BOM strippen - manche Shells pipen mit
-        # Bytes lesen und selbst als UTF-8 dekodieren: Windows-Python nutzt fuer
-        # stdin sonst cp1252 und zerlegt Umlaute in Pfaden (Ordnername, Git).
-        # utf-8-sig strippt zugleich ein BOM, das manche Shells mitpipen.
+        # Read bytes and decode as UTF-8 ourselves: otherwise Windows Python
+        # uses cp1252 for stdin and garbles non-ASCII paths (folder name, git).
+        # utf-8-sig also strips a BOM that some shells pipe along.
         data = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
         if not isinstance(data, dict):
-            raise ValueError("kein JSON-Objekt")
+            raise ValueError("not a JSON object")
     except Exception:
         print("Claude")
         return
@@ -194,13 +265,13 @@ def main():
     try:
         render(data)
     except Exception:
-        # Kontrakt: niemals crashen, schlimmstenfalls nur der Name
+        # Contract: never crash; worst case, show just the name
         print("Claude")
 
 
 def mode_suffix(data):
-    # Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
-    # thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+    # Thinking mode: effort.level (absent for models without an effort
+    # parameter), thinking.enabled (only "off" is shown), fast_mode.
     out = ""
     effort = data.get("effort")
     if isinstance(effort, dict) and isinstance(effort.get("level"), str) and effort["level"]:
@@ -238,7 +309,7 @@ def render(data):
         used = from_transcript(data)
         limit = detect_limit(data, used)
         pct = (used / limit * 100) if limit else 0
-    if not isinstance(pct, (int, float)) or pct != pct:  # NaN-Schutz
+    if not isinstance(pct, (int, float)) or pct != pct:  # NaN guard
         pct = 0
     pct = max(0, pct)
     free = max(0, limit - used)
@@ -249,13 +320,17 @@ def render(data):
     ctx_seg = (f"{col}{fmt_tokens(used)}{RESET}{DIM}/{fmt_limit(limit)}{RESET} "
                f"{DIM}\u00b7{RESET} free {GREEN}{fmt_tokens(free)}{RESET}")
     if pct >= 85:
-        ctx_seg += f" {RED}Compact bald!{RESET}"
+        ctx_seg += f" {RED}compact soon{RESET}"
 
     parts = [
         name,
         f"{col}{bar(pct)}{RESET} {col}{fixed(pct, 0)}%{RESET}",
         ctx_seg,
     ]
+
+    limits = rate_limits(data)
+    if limits:
+        parts.append(limits)
 
     agents = active_agents(data)
     if agents > 0:
@@ -272,7 +347,7 @@ def render(data):
     if (cost.get("total_duration_ms") or 0) > 60_000:
         cost_bits.append(fmt_duration(cost["total_duration_ms"]) + " runtime")
     if cost_bits:
-        # Join ausserhalb des f-Strings: Backslash im Ausdruck erst ab Python 3.12 erlaubt
+        # join outside the f-string: a backslash in the expression needs Python 3.12+
         joined = " \u00b7 ".join(cost_bits)
         parts.append(f"{DIM}{joined}{RESET}")
 

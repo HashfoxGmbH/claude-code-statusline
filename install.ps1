@@ -1,37 +1,237 @@
-# Claude Code Statusline - Installer (Windows)
-# Zeigt Modell, Context-Verbrauch (%, Balken, free), laufende Subagenten,
-# Kosten, Zeilen und Laufzeit unter der Eingabezeile jeder Claude-Code-Session.
+# Claude Code Statusline - installer (Windows)
+# Shows model, thinking mode, context usage (%, bar, free), rate limits, running
+# subagents, cost, lines and runtime below the input line of every Claude Code session.
 #
-# Laeuft ohne Zusatzinstallation: nutzt Node.js oder Python falls vorhanden,
-# sonst die reine PowerShell-Variante (auf jedem Windows verfuegbar).
+# Needs nothing extra: uses Node.js or Python if present, otherwise the pure
+# PowerShell variant (available on every Windows).
 #
-# Nutzung:  powershell -ExecutionPolicy Bypass -File install.ps1
-#   oder:   irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1 | iex
+# Install:    irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1 | iex
+#   or:       powershell -ExecutionPolicy Bypass -File install.ps1
+# Uninstall:  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1))) -Uninstall
+#   or:       powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
+param([switch]$Uninstall)
 $ErrorActionPreference = 'Stop'
+if ($env:CLAUDE_STATUSLINE_UNINSTALL -eq '1') { $Uninstall = $true }
 
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
 New-Item -ItemType Directory -Force $claudeDir | Out-Null
-# Forward-Slashes: Claude Code fuehrt den Befehl unter Windows via Git Bash
-# oder PowerShell aus; mit / funktioniert der Pfad in beiden.
+# Forward slashes: on Windows Claude Code runs the command via Git Bash or
+# PowerShell; a path with / works in both.
 $claudeDirFwd = $claudeDir -replace '\\', '/'
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
-$node = Get-Command node -ErrorAction SilentlyContinue
-$python = Get-Command python -ErrorAction SilentlyContinue
+function Test-StatuslineRuntime([string]$exe, [string[]]$argList) {
+    # Does the command exist AND actually run? The Microsoft Store placeholder
+    # python.exe (WindowsApps) exists on many machines but only opens the Store.
+    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        $null = & $exe @argList 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+# No double quotes inside these arguments: Windows PowerShell 5.1 strips them.
+$node = Test-StatuslineRuntime 'node' @('-e', 'process.exit(parseInt(process.versions.node) >= 12 ? 0 : 1)')
+$python = Test-StatuslineRuntime 'python' @('-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)')
+
+$mergeJs = @'
+// Merge settings.json. Mode, command and settings path come in via environment
+// variables because Windows PowerShell 5.1 strips double quotes from arguments
+// passed to node.
+// Exit codes: 0 = ok, 1 = error, 3 = uninstall: no statusline of ours registered.
+const fs = require('fs'), os = require('os'), path = require('path');
+const p = process.env.CLAUDE_STATUSLINE_SETTINGS || path.join(os.homedir(), '.claude', 'settings.json');
+const bak = p + '.bak';
+const mode = process.env.CLAUDE_STATUSLINE_MODE;
+const cmd = process.env.CLAUDE_STATUSLINE_CMD;
+const load = (f) => {
+  let raw = fs.readFileSync(f, 'utf8');
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  return raw.trim() ? JSON.parse(raw) : {};
+};
+const ours = (s) => !!(s && s.statusLine && typeof s.statusLine === 'object'
+  && /[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b/.test(String(s.statusLine.command)));
+const save = (s) => fs.writeFileSync(p, JSON.stringify(s, null, 2) + '\n');
+let s = {};
+if (fs.existsSync(p)) {
+  try {
+    s = load(p);
+    if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('not a JSON object');
+  } catch (e) { console.error('settings.json is not valid JSON: ' + e.message); process.exit(1); }
+}
+if (mode === 'uninstall') {
+  if (!ours(s)) process.exit(3);
+  // Restore a statusLine the user had before installing, taken from the backup
+  let prev = null;
+  try { const b = load(bak); if (b && b.statusLine && !ours(b)) prev = b.statusLine; } catch (e) { /* no backup */ }
+  if (prev) s.statusLine = prev; else delete s.statusLine;
+  save(s);
+  console.log(prev ? 'Restored your previous statusLine from settings.json.bak.' : 'Removed statusLine from settings.json.');
+} else {
+  // Back up only a state WITHOUT this statusline: re-running the installer must not
+  // overwrite the original backup with already-modified settings.
+  if (fs.existsSync(p) && !ours(s)) fs.copyFileSync(p, bak);
+  s.statusLine = { type: 'command', command: cmd, padding: 0 };
+  save(s);
+}
+'@
+$mergePy = @'
+# Merge settings.json. Mode, command and settings path come in via environment variables.
+# Exit codes: 0 = ok, 1 = error, 3 = uninstall: no statusline of ours registered.
+import json, os, re, shutil, sys
+p = os.environ.get('CLAUDE_STATUSLINE_SETTINGS') or os.path.expanduser('~/.claude/settings.json')
+bak = p + '.bak'
+mode = os.environ.get('CLAUDE_STATUSLINE_MODE')
+cmd = os.environ.get('CLAUDE_STATUSLINE_CMD')
+
+def load(f):
+    with open(f, encoding='utf-8-sig') as fh:
+        raw = fh.read()
+    return json.loads(raw) if raw.strip() else {}
+
+def ours(s):
+    sl = s.get('statusLine') if isinstance(s, dict) else None
+    return isinstance(sl, dict) and re.search(r'[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b', str(sl.get('command'))) is not None
+
+def save(s):
+    with open(p, 'w', encoding='utf-8') as f:
+        json.dump(s, f, indent=2, ensure_ascii=False)
+        f.write('\n')
+
+s = {}
+if os.path.exists(p):
+    try:
+        s = load(p)
+        if not isinstance(s, dict):
+            raise ValueError('not a JSON object')
+    except Exception as e:
+        print('settings.json is not valid JSON: %s' % e, file=sys.stderr)
+        sys.exit(1)
+if mode == 'uninstall':
+    if not ours(s):
+        sys.exit(3)
+    # Restore a statusLine the user had before installing, taken from the backup
+    prev = None
+    try:
+        b = load(bak)
+        if isinstance(b, dict) and b.get('statusLine') and not ours(b):
+            prev = b['statusLine']
+    except Exception:
+        pass
+    if prev:
+        s['statusLine'] = prev
+    else:
+        s.pop('statusLine', None)
+    save(s)
+    print('Restored your previous statusLine from settings.json.bak.' if prev else 'Removed statusLine from settings.json.')
+else:
+    # Back up only a state WITHOUT this statusline: re-running the installer must not
+    # overwrite the original backup with already-modified settings.
+    if os.path.exists(p) and not ours(s):
+        shutil.copy(p, bak)
+    s['statusLine'] = {'type': 'command', 'command': cmd, 'padding': 0}
+    save(s)
+'@
+
+function Test-StatuslineOurs($s) {
+    return [bool]($s -and $s.statusLine -and ("$($s.statusLine.command)" -match '[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b'))
+}
+
+function Read-StatuslineSettings([string]$path) {
+    $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if (-not $raw -or -not $raw.Trim()) { return New-Object PSObject }
+    $obj = $raw | ConvertFrom-Json
+    if ($obj -isnot [System.Management.Automation.PSCustomObject]) { throw 'not a JSON object' }
+    return $obj
+}
+
+function Invoke-StatuslineMergePs([string]$mode, [string]$cmd) {
+    # Same logic as the Node/Python merge scripts, for machines without either.
+    $settingsPath = Join-Path $claudeDir 'settings.json'
+    $bakPath = "$settingsPath.bak"
+    $settings = New-Object PSObject
+    if (Test-Path -LiteralPath $settingsPath) {
+        try { $settings = Read-StatuslineSettings $settingsPath }
+        catch { Write-Host "settings.json is not valid JSON: $($_.Exception.Message)"; return 1 }
+    }
+    if ($mode -eq 'uninstall') {
+        if (-not (Test-StatuslineOurs $settings)) { return 3 }
+        $prev = $null
+        try {
+            $b = Read-StatuslineSettings $bakPath
+            if ($b.statusLine -and -not (Test-StatuslineOurs $b)) { $prev = $b.statusLine }
+        } catch { }
+        if ($prev) { $settings | Add-Member NoteProperty statusLine $prev -Force }
+        else { $settings.PSObject.Properties.Remove('statusLine') }
+        if ($prev) { Write-Host 'Restored your previous statusLine from settings.json.bak.' }
+        else { Write-Host 'Removed statusLine from settings.json.' }
+    } else {
+        # Back up only a state WITHOUT this statusline (see merge scripts).
+        if ((Test-Path -LiteralPath $settingsPath) -and -not (Test-StatuslineOurs $settings)) {
+            Copy-Item -LiteralPath $settingsPath $bakPath -Force
+        }
+        $statusLine = New-Object PSObject
+        $statusLine | Add-Member NoteProperty type 'command'
+        $statusLine | Add-Member NoteProperty command $cmd
+        $statusLine | Add-Member NoteProperty padding 0
+        $settings | Add-Member NoteProperty statusLine $statusLine -Force
+    }
+    [System.IO.File]::WriteAllText($settingsPath, (($settings | ConvertTo-Json -Depth 100) + "`n"), $utf8NoBom)
+    return 0
+}
+
+function Invoke-StatuslineMerge([string]$mode, [string]$cmd) {
+    if (-not ($node -or $python)) { return (Invoke-StatuslineMergePs $mode $cmd) }
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('claude-statusline-merge-' + [guid]::NewGuid().ToString('N'))
+    $mergeFile = $null
+    $env:CLAUDE_STATUSLINE_MODE = $mode
+    $env:CLAUDE_STATUSLINE_CMD = $cmd
+    $env:CLAUDE_STATUSLINE_SETTINGS = Join-Path $claudeDir 'settings.json'
+    try {
+        if ($node) {
+            $mergeFile = "$tmp.js"
+            [System.IO.File]::WriteAllText($mergeFile, $mergeJs, $utf8NoBom)
+            & node $mergeFile | Write-Host
+        } else {
+            $mergeFile = "$tmp.py"
+            [System.IO.File]::WriteAllText($mergeFile, $mergePy, $utf8NoBom)
+            & python $mergeFile | Write-Host
+        }
+        return $LASTEXITCODE
+    } finally {
+        Remove-Item Env:CLAUDE_STATUSLINE_MODE, Env:CLAUDE_STATUSLINE_CMD, Env:CLAUDE_STATUSLINE_SETTINGS -ErrorAction SilentlyContinue
+        if ($mergeFile) { Remove-Item -LiteralPath $mergeFile -ErrorAction SilentlyContinue }
+    }
+}
+
+if ($Uninstall) {
+    $rc = Invoke-StatuslineMerge 'uninstall' ''
+    if ($rc -eq 3) {
+        Write-Host 'This statusline is not registered in settings.json - nothing to do.'
+        return
+    }
+    if ($rc -ne 0) { throw 'Could not update settings.json.' }
+    foreach ($ext in 'js', 'py', 'ps1') {
+        Remove-Item -LiteralPath (Join-Path $claudeDir "statusline.$ext") -ErrorAction SilentlyContinue
+    }
+    Write-Host 'Statusline uninstalled. Restart running Claude Code sessions to apply.'
+    return
+}
 
 $statuslineJs = @'
 #!/usr/bin/env node
 /**
- * Claude Code Statusline (Windows): Modell + Context-Verbrauch + freie Tokens.
+ * Claude Code statusline (Node variant): model + thinking mode, context usage,
+ * free tokens, rate limits, running subagents, cost, folder + git branch.
  *
- * Primaerquelle ist das stdin-Feld `context_window` (Claude Code v2.1.x+):
- *   - resume-fest (Live-Session-State, nicht Transcript-Raten),
- *   - limit-korrekt (200k vs. 1M exakt),
- *   - subagenten-frei (nur Haupt-Session-Context).
+ * The primary source is the stdin field `context_window` (Claude Code v2.1.x+):
+ *   - resume-safe (live session state, not guessed from the transcript),
+ *   - limit-correct (200k vs. 1M exactly),
+ *   - subagent-free (main session context only).
  *
- * Fallback fuer aeltere Versionen: letzte Assistant-Nachricht der Hauptkette
- * aus dem Transcript (isSidechain wird uebersprungen).
+ * Fallback for older versions: the last assistant message of the main chain
+ * from the transcript (isSidechain entries are skipped).
  *
- * Gegenstueck zu ~/.claude/statusline.py in WSL Ubuntu.
+ * Behaviorally identical to statusline.py and statusline.ps1.
  */
 'use strict';
 const fs = require('fs');
@@ -45,17 +245,16 @@ const RED = '\x1b[31m';
 const CYAN = '\x1b[36m';
 
 function fixed(x, digits, unit = 1) {
-  // x/unit mit `digits` Nachkommastellen, halbe Werte aufgerundet. Erst auf
-  // eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst bauen:
-  // Python- und .NET-Formatierung runden halbe Werte zur geraden Zahl, so
-  // zeigen alle drei Varianten exakt dieselben Werte.
+  // x/unit with `digits` decimals, halves rounded up. Round to an integer first
+  // (floor(v + 0.5)), then build the string by hand: Python and .NET formatting
+  // round halves to even, so this is what keeps all three variants identical.
   const v = Math.max(0, Math.floor((x * 10 ** digits + unit / 2) / unit));
   const s = String(v).padStart(digits + 1, '0');
   return digits ? s.slice(0, -digits) + '.' + s.slice(-digits) : s;
 }
 
 function fmtTokens(n) {
-  // Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+  // Thresholds after rounding: 999950 is "1.0M", not "1000.0k"
   if (n >= 999_950) return fixed(n, 1, 1_000_000) + 'M';
   if (n >= 999.5) return fixed(n, 1, 1000) + 'k';
   return fixed(n, 0);
@@ -68,8 +267,8 @@ function fmtLimit(n) {
 }
 
 function readTail(file, maxBytes) {
-  // Nur das Dateiende lesen - Transcripts werden viele MB gross,
-  // die Statusline laeuft alle paar hundert ms.
+  // Read only the end of the file - transcripts grow to many MB and the
+  // statusline runs every few hundred ms.
   const fd = fs.openSync(file, 'r');
   try {
     const size = fs.fstatSync(fd).size;
@@ -99,15 +298,15 @@ function fromTranscript(data) {
           + (u.cache_read_input_tokens || 0)
           + (u.cache_creation_input_tokens || 0);
       }
-    } catch { /* Statusline darf nie crashen */ }
+    } catch { /* the statusline must never crash */ }
   }
   return used;
 }
 
 function detectLimit(data, used) {
-  // 1M-Session erkennen, wenn Claude Code kein context_window liefert
-  // (aeltere Versionen / Resume-Edge-Cases). Sonst wuerde eine resumte
-  // 1M-Session faelschlich als /200k angezeigt.
+  // Detect a 1M session when Claude Code sends no context_window (older
+  // versions / resume edge cases). Otherwise a resumed 1M session would
+  // wrongly show /200k.
   if (used > 200_000) return 1_000_000;
   if (data.exceeds_200k_tokens) return 1_000_000;
   const model = data.model || {};
@@ -120,12 +319,12 @@ function detectLimit(data, used) {
     if (typeof settings.model === 'string' && /\[1m\]/i.test(settings.model)) {
       return 1_000_000;
     }
-  } catch { /* Settings nicht lesbar -> konservativ 200k */ }
+  } catch { /* settings unreadable -> conservatively 200k */ }
   return 200_000;
 }
 
 function gitBranch(cwd) {
-  // .git/HEAD direkt lesen statt git zu spawnen (Statusline laeuft oft)
+  // Read .git/HEAD directly instead of spawning git (the statusline runs often)
   try {
     let dir = cwd;
     for (let i = 0; i < 12 && dir; i++) {
@@ -133,7 +332,7 @@ function gitBranch(cwd) {
       if (fs.existsSync(gitPath)) {
         let headFile = path.join(gitPath, 'HEAD');
         const stat = fs.statSync(gitPath);
-        if (stat.isFile()) { // Worktree: .git ist Datei "gitdir: <pfad>"
+        if (stat.isFile()) { // worktree: .git is a file "gitdir: <path>"
           const gitdir = fs.readFileSync(gitPath, 'utf8').replace(/^gitdir:\s*/, '').trim();
           headFile = path.join(path.isAbsolute(gitdir) ? gitdir : path.join(dir, gitdir), 'HEAD');
         }
@@ -145,15 +344,35 @@ function gitBranch(cwd) {
       if (parent === dir) break;
       dir = parent;
     }
-  } catch { /* kein Git-Repo */ }
+  } catch { /* not a git repo */ }
   return null;
 }
 
+function waitingOnTool(file) {
+  // Last message entry of a subagent transcript: assistant with tool_use =
+  // waiting for a tool (e.g. a long build), user with tool_result = the model
+  // is working on the next step. Either way nothing is written to the
+  // transcript until it finishes, but the agent is still running.
+  const lines = readTail(file, 64 * 1024).split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"type"')) continue;
+    let obj;
+    try { obj = JSON.parse(lines[i]); } catch { continue; }
+    if (obj.type !== 'assistant' && obj.type !== 'user') continue;
+    const content = obj.message && obj.message.content;
+    if (!Array.isArray(content)) return false;
+    const want = obj.type === 'assistant' ? 'tool_use' : 'tool_result';
+    return content.some((c) => c && c.type === want);
+  }
+  return false;
+}
+
 function activeAgents(data) {
-  // Laufende Subagenten: agent-*.jsonl unter <session>/subagents/, das in den
-  // letzten 45s beschrieben wurde. Laufende Agenten appenden staendig an ihr
-  // Transcript; fertige Dateien veralten sofort. Resume-fest, da der Pfad
-  // direkt aus transcript_path abgeleitet wird.
+  // Running subagents: agent-*.jsonl under <session>/subagents/. Active means
+  // written within the last 45s (running agents append constantly), or at
+  // most 10 min old and currently waiting on a tool or the next model reply
+  // (10 min = the maximum Bash timeout). Resume-safe, because the path is
+  // derived directly from transcript_path.
   try {
     const tpath = data.transcript_path;
     if (!tpath) return 0;
@@ -163,13 +382,46 @@ function activeAgents(data) {
     let count = 0;
     for (const f of fs.readdirSync(dir)) {
       if (!f.startsWith('agent-') || !f.endsWith('.jsonl')) continue;
-      const mtime = fs.statSync(path.join(dir, f)).mtimeMs;
-      if (now - mtime < 45_000) count++;
+      const file = path.join(dir, f);
+      const age = now - fs.statSync(file).mtimeMs;
+      if (age < 45_000) count++;
+      else if (age < 600_000) {
+        try { if (waitingOnTool(file)) count++; } catch { /* file gone */ }
+      }
     }
     return count;
   } catch {
     return 0;
   }
+}
+
+function fmtReset(sec) {
+  // Time until a limit resets: 2d4h / 1h05m / 12m
+  const min = Math.max(0, Math.floor(sec / 60));
+  if (min >= 1440) return Math.floor(min / 1440) + 'd' + Math.floor((min % 1440) / 60) + 'h';
+  if (min >= 60) return Math.floor(min / 60) + 'h' + String(min % 60).padStart(2, '0') + 'm';
+  return min + 'm';
+}
+
+function rateLimits(data) {
+  // Rate limits (Pro/Max, or a gateway spend limit): "5h 23% . 7d 41%".
+  // From 70 % on with the time until reset. Missing windows are skipped.
+  const rl = data.rate_limits;
+  if (!rl || typeof rl !== 'object') return '';
+  const now = Date.now() / 1000;
+  const bits = [];
+  for (const [key, label] of [['five_hour', '5h'], ['seven_day', '7d'], ['spend_limit', 'spend']]) {
+    const w = rl[key];
+    if (!w || typeof w.used_percentage !== 'number' || !Number.isFinite(w.used_percentage)) continue;
+    const pct = Math.max(0, w.used_percentage);
+    const col = pct >= 90 ? RED : pct >= 70 ? YELLOW : GREEN;
+    let bit = `${DIM}${label}${RESET} ${col}${fixed(pct, 0)}%${RESET}`;
+    if (pct >= 70 && typeof w.resets_at === 'number' && w.resets_at > now) {
+      bit += ` ${DIM}(${fmtReset(w.resets_at - now)})${RESET}`;
+    }
+    bits.push(bit);
+  }
+  return bits.join(` ${DIM}\u00B7${RESET} `);
 }
 
 function fmtDuration(ms) {
@@ -179,7 +431,7 @@ function fmtDuration(ms) {
 }
 
 function bar(pct, width) {
-  // floor(x+0.5) statt Math.round: identisches Runden wie die Python-Variante
+  // floor(x+0.5): rounds exactly like the Python and PowerShell variants
   const filled = Math.max(0, Math.min(width, Math.floor((pct / 100) * width + 0.5)));
   return '\u25B0'.repeat(filled) + DIM + '\u25B1'.repeat(width - filled);
 }
@@ -187,10 +439,10 @@ function bar(pct, width) {
 function main() {
   let data = {};
   try {
-    // BOM strippen - manche Shells (Windows PowerShell 5.1) pipen mit
+    // Strip a BOM - some shells (Windows PowerShell 5.1) pipe one along
     const raw = fs.readFileSync(0, 'utf8');
     data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
-    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('kein JSON-Objekt');
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('not a JSON object');
   } catch {
     process.stdout.write('Claude\n');
     return;
@@ -199,14 +451,14 @@ function main() {
   try {
     render(data);
   } catch {
-    // Kontrakt: niemals crashen, schlimmstenfalls nur der Name
+    // Contract: never crash; worst case, show just the name
     process.stdout.write('Claude\n');
   }
 }
 
 function modeSuffix(data) {
-  // Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
-  // thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+  // Thinking mode: effort.level (absent for models without an effort
+  // parameter), thinking.enabled (only "off" is shown), fast_mode.
   let out = '';
   const effort = data.effort;
   if (effort && typeof effort.level === 'string' && effort.level) {
@@ -221,7 +473,7 @@ function modeSuffix(data) {
 function render(data) {
   const model = data.model || {};
   let name = model.display_name || model.id || 'Claude';
-  try { name += modeSuffix(data); } catch (e) { /* nur Name */ }
+  try { name += modeSuffix(data); } catch (e) { /* name only */ }
 
   let used, limit, pct;
   const cw = data.context_window || {};
@@ -248,13 +500,16 @@ function render(data) {
   const sep = ` ${DIM}\u2502${RESET} `;
 
   let ctxSeg = `${col}${fmtTokens(used)}${RESET}${DIM}/${fmtLimit(limit)}${RESET} ${DIM}\u00B7${RESET} free ${GREEN}${fmtTokens(free)}${RESET}`;
-  if (pct >= 85) ctxSeg += ` ${RED}Compact bald!${RESET}`;
+  if (pct >= 85) ctxSeg += ` ${RED}compact soon${RESET}`;
 
   const parts = [
     `${name}`,
     `${col}${bar(pct, 10)}${RESET} ${col}${fixed(pct, 0)}%${RESET}`,
     ctxSeg,
   ];
+
+  const limits = rateLimits(data);
+  if (limits) parts.push(limits);
 
   const agents = activeAgents(data);
   if (agents > 0) {
@@ -286,19 +541,20 @@ main();
 
 $statuslinePy = @'
 #!/usr/bin/env python3
-"""Claude Code statusline: Modell + Context-Verbrauch + freie Tokens.
+"""Claude Code statusline (Python variant): model + thinking mode, context
+usage, free tokens, rate limits, running subagents, cost, folder + git branch.
 
-Primaerquelle ist das von Claude Code gelieferte stdin-Feld `context_window`
-(ab v2.1.x). Das ist:
-  - resume-fest (Wert kommt aus dem Live-Session-State, nicht aus dem Transcript),
-  - limit-korrekt (context_window_size kennt 200k vs. 1M exakt),
-  - subagenten-frei (nur der Haupt-Session-Context wird gezaehlt).
+The primary source is the stdin field `context_window` sent by Claude Code
+(v2.1.x+). It is:
+  - resume-safe (the value comes from the live session state, not the transcript),
+  - limit-correct (context_window_size knows 200k vs. 1M exactly),
+  - subagent-free (only the main session context is counted).
 
-Fallback (aeltere Claude-Code-Versionen ohne context_window): letzte
-Assistant-Nachricht der Hauptkette aus dem Transcript, Subagenten
-(isSidechain == true) uebersprungen.
+Fallback (older Claude Code versions without context_window): the last
+assistant message of the main chain from the transcript, subagents
+(isSidechain == true) skipped.
 
-Gegenstueck zu %USERPROFILE%\\.claude\\statusline.js auf der Windows-Seite.
+Behaviorally identical to statusline.js and statusline.ps1.
 """
 import sys, json, os, math
 
@@ -307,19 +563,19 @@ GREEN, YELLOW, RED, CYAN = "\033[32m", "\033[33m", "\033[31m", "\033[36m"
 
 
 def fixed(x, digits, unit=1):
-    """x/unit mit `digits` Nachkommastellen, halbe Werte aufgerundet.
+    """x/unit with `digits` decimals, halves rounded up.
 
-    Erst auf eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst
-    bauen: Die Format-Rundung von Python und .NET geht bei halben Werten zur
-    geraden Zahl (0.5 -> "0", 1.25 -> "1.2"), JS toFixed nicht. So zeigen
-    alle drei Varianten exakt dieselben Werte."""
+    Round to an integer first (floor(v + 0.5)), then build the string by hand:
+    Python and .NET format rounding sends halves to the even number
+    (0.5 -> "0", 1.25 -> "1.2"), JS toFixed does not. This keeps all three
+    variants identical."""
     v = max(0, int(math.floor((x * 10 ** digits + unit / 2) / unit)))
     s = str(v).zfill(digits + 1)
     return s[:-digits] + "." + s[-digits:] if digits else s
 
 
 def fmt_tokens(n):
-    # Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+    # Thresholds after rounding: 999950 is "1.0M", not "1000.0k"
     if n >= 999_950:
         return fixed(n, 1, 1_000_000) + "M"
     if n >= 999.5:
@@ -335,20 +591,16 @@ def fmt_limit(n):
     return fixed(n, 0)
 
 
-TAIL_BYTES = 512 * 1024  # Transcripts werden viele MB gross; nur Ende lesen
+TAIL_BYTES = 512 * 1024  # transcripts grow to many MB; read only the end
 
 
 def from_transcript(data):
-    """Fallback: used_tokens aus dem Transcript-Ende ableiten."""
+    """Fallback: derive used tokens from the end of the transcript."""
     used = 0
     tpath = data.get("transcript_path")
     if tpath and os.path.exists(tpath):
         try:
-            with open(tpath, "rb") as f:
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                f.seek(max(0, size - TAIL_BYTES))
-                text = f.read().decode("utf-8", errors="replace")
+            text = read_tail(tpath, TAIL_BYTES)
             for line in text.split("\n"):
                 if '"usage"' not in line:
                     continue
@@ -370,9 +622,8 @@ def from_transcript(data):
 
 
 def detect_limit(data, used):
-    """1M-Session erkennen, wenn context_window fehlt (aeltere Versionen /
-    Resume-Edge-Cases). Sonst wuerde eine resumte 1M-Session als /200k
-    angezeigt werden."""
+    """Detect a 1M session when context_window is missing (older versions /
+    resume edge cases). Otherwise a resumed 1M session would show /200k."""
     if used > 200_000:
         return 1_000_000
     if data.get("exceeds_200k_tokens"):
@@ -393,14 +644,14 @@ def detect_limit(data, used):
 
 
 def git_branch(cwd):
-    """`.git/HEAD` direkt lesen statt git zu spawnen (Statusline laeuft oft)."""
+    """Read `.git/HEAD` directly instead of spawning git (the statusline runs often)."""
     try:
         d = cwd
         for _ in range(12):
             git_path = os.path.join(d, ".git")
             if os.path.exists(git_path):
                 head_file = os.path.join(git_path, "HEAD")
-                if os.path.isfile(git_path):  # Worktree: .git ist Datei
+                if os.path.isfile(git_path):  # worktree: .git is a file
                     with open(git_path, encoding="utf-8") as f:
                         gitdir = f.read().split("gitdir:")[-1].strip()
                     if not os.path.isabs(gitdir):
@@ -420,11 +671,42 @@ def git_branch(cwd):
     return None
 
 
+def read_tail(path, max_bytes):
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        f.seek(max(0, size - max_bytes))
+        return f.read().decode("utf-8", errors="replace")
+
+
+def waiting_on_tool(path):
+    """Last message entry of a subagent transcript: assistant with tool_use =
+    waiting for a tool (e.g. a long build), user with tool_result = the model
+    is working on the next step. Either way nothing is written to the
+    transcript until it finishes, but the agent is still running."""
+    for line in reversed(read_tail(path, 64 * 1024).split("\n")):
+        if '"type"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") not in ("assistant", "user"):
+            continue
+        content = (obj.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            return False
+        want = "tool_use" if obj["type"] == "assistant" else "tool_result"
+        return any(isinstance(c, dict) and c.get("type") == want for c in content)
+    return False
+
+
 def active_agents(data):
-    """Laufende Subagenten: agent-*.jsonl unter <session>/subagents/, das in
-    den letzten 45s beschrieben wurde. Laufende Agenten appenden staendig an
-    ihr Transcript; fertige Dateien veralten sofort. Resume-fest, da der Pfad
-    direkt aus transcript_path abgeleitet wird."""
+    """Running subagents: agent-*.jsonl under <session>/subagents/. Active
+    means written within the last 45s (running agents append constantly), or
+    at most 10 min old and currently waiting on a tool or the next model reply
+    (10 min = the maximum Bash timeout). Resume-safe, because the path is
+    derived directly from transcript_path."""
     import time
     try:
         tpath = data.get("transcript_path")
@@ -439,11 +721,56 @@ def active_agents(data):
         for f in os.listdir(subdir):
             if not (f.startswith("agent-") and f.endswith(".jsonl")):
                 continue
-            if now - os.path.getmtime(os.path.join(subdir, f)) < 45:
+            path = os.path.join(subdir, f)
+            age = now - os.path.getmtime(path)
+            if age < 45:
                 count += 1
+            elif age < 600:
+                try:
+                    if waiting_on_tool(path):
+                        count += 1
+                except Exception:
+                    pass
         return count
     except Exception:
         return 0
+
+
+def fmt_reset(sec):
+    """Time until a limit resets: 2d4h / 1h05m / 12m"""
+    minutes = max(0, int(sec // 60))
+    if minutes >= 1440:
+        return f"{minutes // 1440}d{(minutes % 1440) // 60}h"
+    if minutes >= 60:
+        return f"{minutes // 60}h{minutes % 60:02d}m"
+    return f"{minutes}m"
+
+
+def is_num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x and abs(x) != float("inf")
+
+
+def rate_limits(data):
+    """Rate limits (Pro/Max, or a gateway spend limit): "5h 23% . 7d 41%".
+    From 70 % on with the time until reset. Missing windows are skipped."""
+    import time
+    rl = data.get("rate_limits")
+    if not isinstance(rl, dict):
+        return ""
+    now = time.time()
+    bits = []
+    for key, label in (("five_hour", "5h"), ("seven_day", "7d"), ("spend_limit", "spend")):
+        w = rl.get(key)
+        if not isinstance(w, dict) or not is_num(w.get("used_percentage")):
+            continue
+        pct = max(0, w["used_percentage"])
+        col = RED if pct >= 90 else YELLOW if pct >= 70 else GREEN
+        bit = f"{DIM}{label}{RESET} {col}{fixed(pct, 0)}%{RESET}"
+        reset = w.get("resets_at")
+        if pct >= 70 and is_num(reset) and reset > now:
+            bit += f" {DIM}({fmt_reset(reset - now)}){RESET}"
+        bits.append(bit)
+    return f" {DIM}\u00b7{RESET} ".join(bits)
 
 
 def fmt_duration(ms):
@@ -454,26 +781,25 @@ def fmt_duration(ms):
 
 
 def bar(pct, width=10):
-    # floor(x+0.5) statt round(): identisches Runden wie die JS-Variante
-    # (Python rundet halbe Werte zur geraden Zahl, JS nicht)
+    # floor(x+0.5) instead of round(): rounds exactly like the JS variant
+    # (Python rounds halves to even, JS does not)
     filled = max(0, min(width, int(pct / 100 * width + 0.5)))
     return "\u25b0" * filled + DIM + "\u25b1" * (width - filled)
 
 
 def main():
     try:
-        # Windows-Python nutzt sonst cp1252 und crasht an den Balkenzeichen
+        # otherwise Windows Python uses cp1252 and crashes on the bar characters
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
     try:
-        # BOM strippen - manche Shells pipen mit
-        # Bytes lesen und selbst als UTF-8 dekodieren: Windows-Python nutzt fuer
-        # stdin sonst cp1252 und zerlegt Umlaute in Pfaden (Ordnername, Git).
-        # utf-8-sig strippt zugleich ein BOM, das manche Shells mitpipen.
+        # Read bytes and decode as UTF-8 ourselves: otherwise Windows Python
+        # uses cp1252 for stdin and garbles non-ASCII paths (folder name, git).
+        # utf-8-sig also strips a BOM that some shells pipe along.
         data = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
         if not isinstance(data, dict):
-            raise ValueError("kein JSON-Objekt")
+            raise ValueError("not a JSON object")
     except Exception:
         print("Claude")
         return
@@ -481,13 +807,13 @@ def main():
     try:
         render(data)
     except Exception:
-        # Kontrakt: niemals crashen, schlimmstenfalls nur der Name
+        # Contract: never crash; worst case, show just the name
         print("Claude")
 
 
 def mode_suffix(data):
-    # Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
-    # thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+    # Thinking mode: effort.level (absent for models without an effort
+    # parameter), thinking.enabled (only "off" is shown), fast_mode.
     out = ""
     effort = data.get("effort")
     if isinstance(effort, dict) and isinstance(effort.get("level"), str) and effort["level"]:
@@ -525,7 +851,7 @@ def render(data):
         used = from_transcript(data)
         limit = detect_limit(data, used)
         pct = (used / limit * 100) if limit else 0
-    if not isinstance(pct, (int, float)) or pct != pct:  # NaN-Schutz
+    if not isinstance(pct, (int, float)) or pct != pct:  # NaN guard
         pct = 0
     pct = max(0, pct)
     free = max(0, limit - used)
@@ -536,13 +862,17 @@ def render(data):
     ctx_seg = (f"{col}{fmt_tokens(used)}{RESET}{DIM}/{fmt_limit(limit)}{RESET} "
                f"{DIM}\u00b7{RESET} free {GREEN}{fmt_tokens(free)}{RESET}")
     if pct >= 85:
-        ctx_seg += f" {RED}Compact bald!{RESET}"
+        ctx_seg += f" {RED}compact soon{RESET}"
 
     parts = [
         name,
         f"{col}{bar(pct)}{RESET} {col}{fixed(pct, 0)}%{RESET}",
         ctx_seg,
     ]
+
+    limits = rate_limits(data)
+    if limits:
+        parts.append(limits)
 
     agents = active_agents(data)
     if agents > 0:
@@ -559,7 +889,7 @@ def render(data):
     if (cost.get("total_duration_ms") or 0) > 60_000:
         cost_bits.append(fmt_duration(cost["total_duration_ms"]) + " runtime")
     if cost_bits:
-        # Join ausserhalb des f-Strings: Backslash im Ausdruck erst ab Python 3.12 erlaubt
+        # join outside the f-string: a backslash in the expression needs Python 3.12+
         joined = " \u00b7 ".join(cost_bits)
         parts.append(f"{DIM}{joined}{RESET}")
 
@@ -579,10 +909,10 @@ if __name__ == "__main__":
 '@
 
 $statuslinePs = @'
-# Claude Code Statusline (PowerShell) - Zero-Dependency-Variante fuer Windows.
-# Funktions-Gegenstueck zu statusline.js (Node) und statusline.py (Python):
-# Modell, Context-Balken/%, used/limit, free, laufende Subagenten, Kosten,
-# Zeilen, Laufzeit, Ordner + Git-Branch. Kontrakt: niemals crashen.
+# Claude Code statusline (PowerShell) - zero-dependency variant for Windows.
+# Behaviorally identical to statusline.js (Node) and statusline.py (Python):
+# model + thinking mode, context bar/%, used/limit, free, rate limits, running
+# subagents, cost, lines, runtime, folder + git branch. Contract: never crash.
 $ErrorActionPreference = 'Stop'
 $inv = [System.Globalization.CultureInfo]::InvariantCulture
 
@@ -591,10 +921,10 @@ $RESET = "$E[0m"; $DIM = "$E[2m"; $GREEN = "$E[32m"
 $YELLOW = "$E[33m"; $RED = "$E[31m"; $CYAN = "$E[36m"
 
 function Format-Fixed([double]$x, [int]$digits, [double]$unit = 1) {
-    # x/unit mit $digits Nachkommastellen, halbe Werte aufgerundet. Erst auf
-    # eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst bauen:
-    # .NET-Formate runden halbe Werte zur geraden Zahl ('F') bzw. nach 15
-    # Stellen ('0'), so zeigen alle drei Varianten exakt dieselben Werte.
+    # x/unit with $digits decimals, halves rounded up. Round to an integer
+    # first (floor(v + 0.5)), then build the string by hand: .NET formats round
+    # halves to even ('F') or after 15 digits ('0'); this keeps all three
+    # variants identical.
     $v = [math]::Floor(($x * [math]::Pow(10, $digits) + $unit / 2) / $unit)
     if ($v -lt 0) { $v = 0 }
     $s = $v.ToString('F0', $inv).PadLeft($digits + 1, '0')
@@ -603,7 +933,7 @@ function Format-Fixed([double]$x, [int]$digits, [double]$unit = 1) {
 }
 
 function Format-Tokens([double]$n) {
-    # Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+    # Thresholds after rounding: 999950 is "1.0M", not "1000.0k"
     if ($n -ge 999950) { return (Format-Fixed $n 1 1000000) + 'M' }
     if ($n -ge 999.5) { return (Format-Fixed $n 1 1000) + 'k' }
     return Format-Fixed $n 0
@@ -622,26 +952,34 @@ function Format-Duration([double]$ms) {
 }
 
 function Get-Bar([double]$pct, [int]$width) {
-    # floor(x+0.5): identisches Runden wie JS-/Python-Variante
+    # floor(x+0.5): rounds exactly like the JS and Python variants
     $filled = [int][math]::Floor($pct / 100 * $width + 0.5)
     if ($filled -lt 0) { $filled = 0 }
     if ($filled -gt $width) { $filled = $width }
     return (([string][char]0x25B0) * $filled) + $DIM + (([string][char]0x25B1) * ($width - $filled))
 }
 
+function Read-Tail([string]$path, [int]$maxBytes) {
+    $fs = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+    try {
+        if ($fs.Length -gt $maxBytes) { $null = $fs.Seek(-$maxBytes, 'End') }
+        $reader = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
+        return $reader.ReadToEnd()
+    } finally { $fs.Close() }
+}
+
+function Test-Number($x) {
+    if (-not ($x -is [int] -or $x -is [long] -or $x -is [double] -or $x -is [decimal])) { return $false }
+    return -not ([double]::IsNaN([double]$x) -or [double]::IsInfinity([double]$x))
+}
+
 function Get-TranscriptUsed($data) {
-    # Fallback: used_tokens aus dem Transcript-Ende (letzte 512 KB) ableiten.
+    # Fallback: derive used tokens from the end of the transcript (last 512 KB).
     $used = 0
     $tpath = $data.transcript_path
     if (-not $tpath -or -not (Test-Path -LiteralPath $tpath)) { return 0 }
     try {
-        $fs = [System.IO.File]::Open($tpath, 'Open', 'Read', 'ReadWrite')
-        try {
-            $tail = 524288
-            if ($fs.Length -gt $tail) { $null = $fs.Seek(-$tail, 'End') }
-            $reader = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
-            $text = $reader.ReadToEnd()
-        } finally { $fs.Close() }
+        $text = Read-Tail $tpath 524288
         foreach ($line in $text -split "`n") {
             if ($line -notmatch '"usage"') { continue }
             try { $obj = $line | ConvertFrom-Json } catch { continue }
@@ -655,8 +993,8 @@ function Get-TranscriptUsed($data) {
 }
 
 function Get-Limit($data, [double]$used) {
-    # 1M-Session erkennen, wenn context_window fehlt (aeltere Versionen /
-    # Resume-Edge-Cases) - sonst wuerde eine resumte 1M-Session /200k zeigen.
+    # Detect a 1M session when context_window is missing (older versions /
+    # resume edge cases) - otherwise a resumed 1M session would show /200k.
     if ($used -gt 200000) { return 1000000 }
     if ($data.exceeds_200k_tokens) { return 1000000 }
     $modelStr = "$($data.model.id) $($data.model.display_name)"
@@ -669,7 +1007,7 @@ function Get-Limit($data, [double]$used) {
 }
 
 function Get-GitBranch([string]$cwd) {
-    # .git/HEAD direkt lesen statt git zu spawnen (Statusline laeuft oft)
+    # Read .git/HEAD directly instead of spawning git (the statusline runs often)
     try {
         $dir = $cwd
         for ($i = 0; $i -lt 12 -and $dir; $i++) {
@@ -693,33 +1031,94 @@ function Get-GitBranch([string]$cwd) {
     return $null
 }
 
+function Test-WaitingOnTool([string]$path) {
+    # Last message entry of a subagent transcript: assistant with tool_use =
+    # waiting for a tool (e.g. a long build), user with tool_result = the model
+    # is working on the next step. Either way nothing is written to the
+    # transcript until it finishes, but the agent is still running.
+    $lines = (Read-Tail $path 65536) -split "`n"
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        if ($lines[$i] -notmatch '"type"') { continue }
+        try { $obj = $lines[$i] | ConvertFrom-Json } catch { continue }
+        if ($obj.type -ne 'assistant' -and $obj.type -ne 'user') { continue }
+        $content = $obj.message.content
+        if ($null -eq $content -or $content -is [string]) { return $false }
+        $want = if ($obj.type -eq 'assistant') { 'tool_use' } else { 'tool_result' }
+        foreach ($c in @($content)) { if ($c.type -eq $want) { return $true } }
+        return $false
+    }
+    return $false
+}
+
 function Get-ActiveAgents($data) {
-    # Laufende Subagenten: agent-*.jsonl unter <session>/subagents/ mit
-    # mtime < 45s. Laufende Agenten appenden staendig an ihr Transcript.
+    # Running subagents: agent-*.jsonl under <session>/subagents/. Active means
+    # written within the last 45s (running agents append constantly), or at
+    # most 10 min old and currently waiting on a tool or the next model reply
+    # (10 min = the maximum Bash timeout).
     try {
         $tpath = $data.transcript_path
         if (-not $tpath) { return 0 }
         $dir = Join-Path ($tpath -replace '\.jsonl$', '') 'subagents'
         if (-not (Test-Path -LiteralPath $dir)) { return 0 }
-        $cutoff = (Get-Date).AddSeconds(-45)
-        return @(Get-ChildItem -LiteralPath $dir -Filter 'agent-*.jsonl' | Where-Object { $_.LastWriteTime -gt $cutoff }).Count
+        $now = [DateTime]::UtcNow
+        $count = 0
+        foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'agent-*.jsonl')) {
+            if (-not $f.Name.EndsWith('.jsonl')) { continue }
+            $age = ($now - $f.LastWriteTimeUtc).TotalSeconds
+            if ($age -lt 45) { $count++ }
+            elseif ($age -lt 600) {
+                try { if (Test-WaitingOnTool $f.FullName) { $count++ } } catch { }
+            }
+        }
+        return $count
     } catch { return 0 }
+}
+
+function Format-Reset([double]$sec) {
+    # Time until a limit resets: 2d4h / 1h05m / 12m
+    $min = [math]::Floor($sec / 60)
+    if ($min -lt 0) { $min = 0 }
+    if ($min -ge 1440) { return ('{0}d{1}h' -f [math]::Floor($min / 1440), [math]::Floor(($min % 1440) / 60)) }
+    if ($min -ge 60) { return ('{0}h{1:00}m' -f [math]::Floor($min / 60), ($min % 60)) }
+    return "${min}m"
+}
+
+function Get-RateLimits($data) {
+    # Rate limits (Pro/Max, or a gateway spend limit): "5h 23% . 7d 41%".
+    # From 70 % on with the time until reset. Missing windows are skipped.
+    $rl = $data.rate_limits
+    if ($rl -isnot [System.Management.Automation.PSCustomObject]) { return '' }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000
+    $bits = @()
+    foreach ($pair in @(@('five_hour', '5h'), @('seven_day', '7d'), @('spend_limit', 'spend'))) {
+        $w = $rl.($pair[0])
+        if ($w -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-Number $w.used_percentage)) { continue }
+        $pct = [double]$w.used_percentage
+        if ($pct -lt 0) { $pct = 0 }
+        $col = if ($pct -ge 90) { $RED } elseif ($pct -ge 70) { $YELLOW } else { $GREEN }
+        $bit = "$DIM$($pair[1])$RESET $col$(Format-Fixed $pct 0)%$RESET"
+        if ($pct -ge 70 -and (Test-Number $w.resets_at) -and [double]$w.resets_at -gt $now) {
+            $bit += " $DIM($(Format-Reset ([double]$w.resets_at - $now)))$RESET"
+        }
+        $bits += $bit
+    }
+    return ($bits -join " $DIM$([char]0xB7)$RESET ")
 }
 
 try {
     try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
-    # stdin ist UTF-8; ohne das liest Windows mit der OEM-Codepage und zerlegt
-    # Umlaute in Pfaden (Ordnername, Git-Suche).
+    # stdin is UTF-8; without this Windows reads it with the OEM code page and
+    # garbles non-ASCII paths (folder name, git lookup).
     try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
     $raw = [Console]::In.ReadToEnd()
     $raw = $raw.TrimStart([char]0xFEFF)
     $data = $raw | ConvertFrom-Json
-    if ($data -isnot [System.Management.Automation.PSCustomObject]) { throw 'kein JSON-Objekt' }
+    if ($data -isnot [System.Management.Automation.PSCustomObject]) { throw 'not a JSON object' }
 
     $name = if ($data.model.display_name) { $data.model.display_name }
             elseif ($data.model.id) { $data.model.id } else { 'Claude' }
-    # Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
-    # thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+    # Thinking mode: effort.level (absent for models without an effort
+    # parameter), thinking.enabled (only "off" is shown), fast_mode.
     try {
         if ($data.effort -and $data.effort.level -is [string] -and $data.effort.level) {
             $name = "$name $DIM$([char]0xB7)$RESET $($data.effort.level)"
@@ -746,7 +1145,7 @@ try {
         $limit = Get-Limit $data $used
         $pct = if ($limit) { $used / $limit * 100 } else { 0 }
     }
-    # Kein [math]::Max(0, $x): PS waehlt dort den Int32-Overload und RUNDET
+    # No [math]::Max(0, $x): PS picks the Int32 overload there and ROUNDS
     if ([double]::IsNaN($pct) -or [double]::IsInfinity($pct) -or $pct -lt 0) { $pct = 0 }
     $free = $limit - $used
     if ($free -lt 0) { $free = 0 }
@@ -755,7 +1154,7 @@ try {
     $sep = " $DIM$([char]0x2502)$RESET "
 
     $ctxSeg = "$col$(Format-Tokens $used)$RESET$DIM/$(Format-Limit $limit)$RESET $DIM$([char]0xB7)$RESET free $GREEN$(Format-Tokens $free)$RESET"
-    if ($pct -ge 85) { $ctxSeg += " ${RED}Compact bald!$RESET" }
+    if ($pct -ge 85) { $ctxSeg += " ${RED}compact soon$RESET" }
 
     $pctText = Format-Fixed $pct 0
     $parts = @(
@@ -763,6 +1162,9 @@ try {
         "$col$(Get-Bar $pct 10)$RESET $col$pctText%$RESET",
         $ctxSeg
     )
+
+    $limits = Get-RateLimits $data
+    if ($limits) { $parts += $limits }
 
     $agents = Get-ActiveAgents $data
     if ($agents -gt 0) { $parts += "${CYAN}Agents: $agents$RESET" }
@@ -786,12 +1188,10 @@ try {
 
     Write-Output ($parts -join $sep)
 } catch {
-    # Kontrakt: niemals crashen, schlimmstenfalls nur der Name
+    # Contract: never crash; worst case, show just the name
     Write-Output 'Claude'
 }
 '@
-
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 if ($node) {
     $scriptPath = Join-Path $claudeDir 'statusline.js'
@@ -804,101 +1204,31 @@ if ($node) {
     $cmd = 'python "' + $claudeDirFwd + '/statusline.py"'
     $runtime = 'Python'
 } else {
-    # Zero-Dependency-Fallback: PowerShell ist auf jedem Windows vorhanden.
-    # Alle Skripte sind ASCII-only, daher ist kein BOM noetig.
+    # Zero-dependency fallback: PowerShell exists on every Windows.
+    # All scripts are ASCII-only, so no BOM is needed.
     $scriptPath = Join-Path $claudeDir 'statusline.ps1'
     [System.IO.File]::WriteAllText($scriptPath, $statuslinePs, $utf8NoBom)
     $cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $claudeDirFwd + '/statusline.ps1"'
     $runtime = 'PowerShell'
 }
 
-# settings.json mergen (bestehende Einstellungen bleiben erhalten, Backup als .bak)
 $settingsPath = Join-Path $claudeDir 'settings.json'
-$mergeJs = @'
-const fs = require('fs'), os = require('os'), path = require('path');
-const p = path.join(os.homedir(), '.claude', 'settings.json');
-const cmd = process.argv[2];
-let s = {};
-if (fs.existsSync(p)) {
-  try {
-    const raw = fs.readFileSync(p, 'utf8');
-    s = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
-    fs.copyFileSync(p, p + '.bak');
-  }
-  catch (e) { console.error('settings.json ist kein gueltiges JSON: ' + e.message); process.exit(1); }
-}
-s.statusLine = { type: 'command', command: cmd, padding: 0 };
-fs.writeFileSync(p, JSON.stringify(s, null, 2) + '\n');
-'@
-$mergePy = @'
-import json, os, shutil, sys
-p = os.path.expanduser('~/.claude/settings.json')
-s = {}
-if os.path.exists(p):
-    try:
-        with open(p, encoding='utf-8-sig') as f:
-            s = json.load(f)
-        shutil.copy(p, p + '.bak')
-    except Exception as e:
-        print('settings.json ist kein gueltiges JSON: %s' % e, file=sys.stderr)
-        sys.exit(1)
-s['statusLine'] = {'type': 'command', 'command': sys.argv[1], 'padding': 0}
-with open(p, 'w', encoding='utf-8') as f:
-    json.dump(s, f, indent=2)
-    f.write('\n')
-'@
+if ((Invoke-StatuslineMerge 'install' $cmd) -ne 0) { throw 'Could not update settings.json.' }
 
-if ($node -or $python) {
-    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("claude-statusline-merge-" + [guid]::NewGuid().ToString('N'))
-    $mergeFile = $null
-    try {
-        if ($node) {
-            $mergeFile = "$tmp.js"
-            [System.IO.File]::WriteAllText($mergeFile, $mergeJs, $utf8NoBom)
-            & node $mergeFile $cmd
-        } else {
-            $mergeFile = "$tmp.py"
-            [System.IO.File]::WriteAllText($mergeFile, $mergePy, $utf8NoBom)
-            & python $mergeFile $cmd
-        }
-        if ($LASTEXITCODE -ne 0) { throw 'settings.json konnte nicht aktualisiert werden.' }
-    } finally {
-        if ($mergeFile) { Remove-Item $mergeFile -ErrorAction SilentlyContinue }
-    }
-} else {
-    # Merge in purem PowerShell (kein Node/Python vorhanden)
-    $settings = New-Object PSObject
-    if (Test-Path $settingsPath) {
-        try {
-            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
-            Copy-Item $settingsPath "$settingsPath.bak" -Force
-        } catch {
-            Write-Error "settings.json ist kein gueltiges JSON: $($_.Exception.Message)"
-            exit 1
-        }
-    }
-    $statusLine = New-Object PSObject
-    $statusLine | Add-Member NoteProperty type 'command'
-    $statusLine | Add-Member NoteProperty command $cmd
-    $statusLine | Add-Member NoteProperty padding 0
-    $settings | Add-Member NoteProperty statusLine $statusLine -Force
-    [System.IO.File]::WriteAllText($settingsPath, (($settings | ConvertTo-Json -Depth 100) + "`n"), $utf8NoBom)
-}
-
-# Smoke-Test
+# Smoke test
 $samplePath = Join-Path ([System.IO.Path]::GetTempPath()) 'claude-statusline-sample.json'
 [System.IO.File]::WriteAllText($samplePath, '{"model":{"display_name":"Test"},"context_window":{"context_window_size":200000,"total_input_tokens":50000}}', $utf8NoBom)
 try {
-    if ($node) { $out = Get-Content $samplePath -Raw | & node $scriptPath }
-    elseif ($python) { $out = Get-Content $samplePath -Raw | & python $scriptPath }
-    else { $out = cmd /c "type `"$samplePath`" | powershell -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`"" }
+    if ($node) { $out = Get-Content -LiteralPath $samplePath -Raw | & node $scriptPath }
+    elseif ($python) { $out = Get-Content -LiteralPath $samplePath -Raw | & python $scriptPath }
+    else { $out = Get-Content -LiteralPath $samplePath -Raw | & powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath }
 } finally {
-    Remove-Item $samplePath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $samplePath -ErrorAction SilentlyContinue
 }
-if (-not $out) { throw 'Smoke-Test fehlgeschlagen: keine Ausgabe.' }
+if (-not $out) { throw 'Smoke test failed: no output.' }
 
 Write-Host ''
-Write-Host "Statusline installiert ($runtime): $scriptPath"
-Write-Host "settings.json aktualisiert: $settingsPath (Backup: settings.json.bak)"
-Write-Host "Testausgabe:  $out"
-Write-Host 'Fertig. Neue Claude-Code-Sessions zeigen die Statusline an; laufende nach Neustart der Session.'
+Write-Host "Statusline installed ($runtime): $scriptPath"
+Write-Host "settings.json updated: $settingsPath (backup: settings.json.bak)"
+Write-Host "Test output:  $out"
+Write-Host 'Done. New Claude Code sessions show the statusline; running sessions after a restart.'

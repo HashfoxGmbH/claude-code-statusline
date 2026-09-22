@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * Claude Code Statusline (Windows): Modell + Context-Verbrauch + freie Tokens.
+ * Claude Code statusline (Node variant): model + thinking mode, context usage,
+ * free tokens, rate limits, running subagents, cost, folder + git branch.
  *
- * Primaerquelle ist das stdin-Feld `context_window` (Claude Code v2.1.x+):
- *   - resume-fest (Live-Session-State, nicht Transcript-Raten),
- *   - limit-korrekt (200k vs. 1M exakt),
- *   - subagenten-frei (nur Haupt-Session-Context).
+ * The primary source is the stdin field `context_window` (Claude Code v2.1.x+):
+ *   - resume-safe (live session state, not guessed from the transcript),
+ *   - limit-correct (200k vs. 1M exactly),
+ *   - subagent-free (main session context only).
  *
- * Fallback fuer aeltere Versionen: letzte Assistant-Nachricht der Hauptkette
- * aus dem Transcript (isSidechain wird uebersprungen).
+ * Fallback for older versions: the last assistant message of the main chain
+ * from the transcript (isSidechain entries are skipped).
  *
- * Gegenstueck zu ~/.claude/statusline.py in WSL Ubuntu.
+ * Behaviorally identical to statusline.py and statusline.ps1.
  */
 'use strict';
 const fs = require('fs');
@@ -24,17 +25,16 @@ const RED = '\x1b[31m';
 const CYAN = '\x1b[36m';
 
 function fixed(x, digits, unit = 1) {
-  // x/unit mit `digits` Nachkommastellen, halbe Werte aufgerundet. Erst auf
-  // eine Ganzzahl runden (floor(v + 0.5)), dann den String selbst bauen:
-  // Python- und .NET-Formatierung runden halbe Werte zur geraden Zahl, so
-  // zeigen alle drei Varianten exakt dieselben Werte.
+  // x/unit with `digits` decimals, halves rounded up. Round to an integer first
+  // (floor(v + 0.5)), then build the string by hand: Python and .NET formatting
+  // round halves to even, so this is what keeps all three variants identical.
   const v = Math.max(0, Math.floor((x * 10 ** digits + unit / 2) / unit));
   const s = String(v).padStart(digits + 1, '0');
   return digits ? s.slice(0, -digits) + '.' + s.slice(-digits) : s;
 }
 
 function fmtTokens(n) {
-  // Schwellen nach dem Runden: 999950 ist "1.0M", nicht "1000.0k"
+  // Thresholds after rounding: 999950 is "1.0M", not "1000.0k"
   if (n >= 999_950) return fixed(n, 1, 1_000_000) + 'M';
   if (n >= 999.5) return fixed(n, 1, 1000) + 'k';
   return fixed(n, 0);
@@ -47,8 +47,8 @@ function fmtLimit(n) {
 }
 
 function readTail(file, maxBytes) {
-  // Nur das Dateiende lesen - Transcripts werden viele MB gross,
-  // die Statusline laeuft alle paar hundert ms.
+  // Read only the end of the file - transcripts grow to many MB and the
+  // statusline runs every few hundred ms.
   const fd = fs.openSync(file, 'r');
   try {
     const size = fs.fstatSync(fd).size;
@@ -78,15 +78,15 @@ function fromTranscript(data) {
           + (u.cache_read_input_tokens || 0)
           + (u.cache_creation_input_tokens || 0);
       }
-    } catch { /* Statusline darf nie crashen */ }
+    } catch { /* the statusline must never crash */ }
   }
   return used;
 }
 
 function detectLimit(data, used) {
-  // 1M-Session erkennen, wenn Claude Code kein context_window liefert
-  // (aeltere Versionen / Resume-Edge-Cases). Sonst wuerde eine resumte
-  // 1M-Session faelschlich als /200k angezeigt.
+  // Detect a 1M session when Claude Code sends no context_window (older
+  // versions / resume edge cases). Otherwise a resumed 1M session would
+  // wrongly show /200k.
   if (used > 200_000) return 1_000_000;
   if (data.exceeds_200k_tokens) return 1_000_000;
   const model = data.model || {};
@@ -99,12 +99,12 @@ function detectLimit(data, used) {
     if (typeof settings.model === 'string' && /\[1m\]/i.test(settings.model)) {
       return 1_000_000;
     }
-  } catch { /* Settings nicht lesbar -> konservativ 200k */ }
+  } catch { /* settings unreadable -> conservatively 200k */ }
   return 200_000;
 }
 
 function gitBranch(cwd) {
-  // .git/HEAD direkt lesen statt git zu spawnen (Statusline laeuft oft)
+  // Read .git/HEAD directly instead of spawning git (the statusline runs often)
   try {
     let dir = cwd;
     for (let i = 0; i < 12 && dir; i++) {
@@ -112,7 +112,7 @@ function gitBranch(cwd) {
       if (fs.existsSync(gitPath)) {
         let headFile = path.join(gitPath, 'HEAD');
         const stat = fs.statSync(gitPath);
-        if (stat.isFile()) { // Worktree: .git ist Datei "gitdir: <pfad>"
+        if (stat.isFile()) { // worktree: .git is a file "gitdir: <path>"
           const gitdir = fs.readFileSync(gitPath, 'utf8').replace(/^gitdir:\s*/, '').trim();
           headFile = path.join(path.isAbsolute(gitdir) ? gitdir : path.join(dir, gitdir), 'HEAD');
         }
@@ -124,15 +124,35 @@ function gitBranch(cwd) {
       if (parent === dir) break;
       dir = parent;
     }
-  } catch { /* kein Git-Repo */ }
+  } catch { /* not a git repo */ }
   return null;
 }
 
+function waitingOnTool(file) {
+  // Last message entry of a subagent transcript: assistant with tool_use =
+  // waiting for a tool (e.g. a long build), user with tool_result = the model
+  // is working on the next step. Either way nothing is written to the
+  // transcript until it finishes, but the agent is still running.
+  const lines = readTail(file, 64 * 1024).split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"type"')) continue;
+    let obj;
+    try { obj = JSON.parse(lines[i]); } catch { continue; }
+    if (obj.type !== 'assistant' && obj.type !== 'user') continue;
+    const content = obj.message && obj.message.content;
+    if (!Array.isArray(content)) return false;
+    const want = obj.type === 'assistant' ? 'tool_use' : 'tool_result';
+    return content.some((c) => c && c.type === want);
+  }
+  return false;
+}
+
 function activeAgents(data) {
-  // Laufende Subagenten: agent-*.jsonl unter <session>/subagents/, das in den
-  // letzten 45s beschrieben wurde. Laufende Agenten appenden staendig an ihr
-  // Transcript; fertige Dateien veralten sofort. Resume-fest, da der Pfad
-  // direkt aus transcript_path abgeleitet wird.
+  // Running subagents: agent-*.jsonl under <session>/subagents/. Active means
+  // written within the last 45s (running agents append constantly), or at
+  // most 10 min old and currently waiting on a tool or the next model reply
+  // (10 min = the maximum Bash timeout). Resume-safe, because the path is
+  // derived directly from transcript_path.
   try {
     const tpath = data.transcript_path;
     if (!tpath) return 0;
@@ -142,13 +162,46 @@ function activeAgents(data) {
     let count = 0;
     for (const f of fs.readdirSync(dir)) {
       if (!f.startsWith('agent-') || !f.endsWith('.jsonl')) continue;
-      const mtime = fs.statSync(path.join(dir, f)).mtimeMs;
-      if (now - mtime < 45_000) count++;
+      const file = path.join(dir, f);
+      const age = now - fs.statSync(file).mtimeMs;
+      if (age < 45_000) count++;
+      else if (age < 600_000) {
+        try { if (waitingOnTool(file)) count++; } catch { /* file gone */ }
+      }
     }
     return count;
   } catch {
     return 0;
   }
+}
+
+function fmtReset(sec) {
+  // Time until a limit resets: 2d4h / 1h05m / 12m
+  const min = Math.max(0, Math.floor(sec / 60));
+  if (min >= 1440) return Math.floor(min / 1440) + 'd' + Math.floor((min % 1440) / 60) + 'h';
+  if (min >= 60) return Math.floor(min / 60) + 'h' + String(min % 60).padStart(2, '0') + 'm';
+  return min + 'm';
+}
+
+function rateLimits(data) {
+  // Rate limits (Pro/Max, or a gateway spend limit): "5h 23% . 7d 41%".
+  // From 70 % on with the time until reset. Missing windows are skipped.
+  const rl = data.rate_limits;
+  if (!rl || typeof rl !== 'object') return '';
+  const now = Date.now() / 1000;
+  const bits = [];
+  for (const [key, label] of [['five_hour', '5h'], ['seven_day', '7d'], ['spend_limit', 'spend']]) {
+    const w = rl[key];
+    if (!w || typeof w.used_percentage !== 'number' || !Number.isFinite(w.used_percentage)) continue;
+    const pct = Math.max(0, w.used_percentage);
+    const col = pct >= 90 ? RED : pct >= 70 ? YELLOW : GREEN;
+    let bit = `${DIM}${label}${RESET} ${col}${fixed(pct, 0)}%${RESET}`;
+    if (pct >= 70 && typeof w.resets_at === 'number' && w.resets_at > now) {
+      bit += ` ${DIM}(${fmtReset(w.resets_at - now)})${RESET}`;
+    }
+    bits.push(bit);
+  }
+  return bits.join(` ${DIM}\u00B7${RESET} `);
 }
 
 function fmtDuration(ms) {
@@ -158,7 +211,7 @@ function fmtDuration(ms) {
 }
 
 function bar(pct, width) {
-  // floor(x+0.5) statt Math.round: identisches Runden wie die Python-Variante
+  // floor(x+0.5): rounds exactly like the Python and PowerShell variants
   const filled = Math.max(0, Math.min(width, Math.floor((pct / 100) * width + 0.5)));
   return '\u25B0'.repeat(filled) + DIM + '\u25B1'.repeat(width - filled);
 }
@@ -166,10 +219,10 @@ function bar(pct, width) {
 function main() {
   let data = {};
   try {
-    // BOM strippen - manche Shells (Windows PowerShell 5.1) pipen mit
+    // Strip a BOM - some shells (Windows PowerShell 5.1) pipe one along
     const raw = fs.readFileSync(0, 'utf8');
     data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
-    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('kein JSON-Objekt');
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('not a JSON object');
   } catch {
     process.stdout.write('Claude\n');
     return;
@@ -178,14 +231,14 @@ function main() {
   try {
     render(data);
   } catch {
-    // Kontrakt: niemals crashen, schlimmstenfalls nur der Name
+    // Contract: never crash; worst case, show just the name
     process.stdout.write('Claude\n');
   }
 }
 
 function modeSuffix(data) {
-  // Denkmodus: effort.level (fehlt bei Modellen ohne Effort-Parameter),
-  // thinking.enabled (nur "aus" wird angezeigt), fast_mode.
+  // Thinking mode: effort.level (absent for models without an effort
+  // parameter), thinking.enabled (only "off" is shown), fast_mode.
   let out = '';
   const effort = data.effort;
   if (effort && typeof effort.level === 'string' && effort.level) {
@@ -200,7 +253,7 @@ function modeSuffix(data) {
 function render(data) {
   const model = data.model || {};
   let name = model.display_name || model.id || 'Claude';
-  try { name += modeSuffix(data); } catch (e) { /* nur Name */ }
+  try { name += modeSuffix(data); } catch (e) { /* name only */ }
 
   let used, limit, pct;
   const cw = data.context_window || {};
@@ -227,13 +280,16 @@ function render(data) {
   const sep = ` ${DIM}\u2502${RESET} `;
 
   let ctxSeg = `${col}${fmtTokens(used)}${RESET}${DIM}/${fmtLimit(limit)}${RESET} ${DIM}\u00B7${RESET} free ${GREEN}${fmtTokens(free)}${RESET}`;
-  if (pct >= 85) ctxSeg += ` ${RED}Compact bald!${RESET}`;
+  if (pct >= 85) ctxSeg += ` ${RED}compact soon${RESET}`;
 
   const parts = [
     `${name}`,
     `${col}${bar(pct, 10)}${RESET} ${col}${fixed(pct, 0)}%${RESET}`,
     ctxSeg,
   ];
+
+  const limits = rateLimits(data);
+  if (limits) parts.push(limits);
 
   const agents = activeAgents(data);
   if (agents > 0) {

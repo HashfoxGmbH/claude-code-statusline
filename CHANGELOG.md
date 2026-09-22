@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.2.0
+
+### Changed
+- **npm package renamed to `@hashfox/claude-code-statusline`** (was `@hashox/…`, a typo).
+- Context warning is now `compact soon` (was the German `Compact bald!`); all installer
+  messages and code comments are in English.
+
+### Added
+- **Rate limits:** `5h 23% · 7d 41%` for claude.ai Pro/Max (plus `spend` behind a gateway
+  spend limit), colored like the context bar and with a reset countdown from 70 % on.
+- **Uninstall** in every installer: `install.ps1 -Uninstall`, `install.sh --uninstall`,
+  `npx @hashfox/claude-code-statusline --uninstall`. Removes the entry (or restores the
+  statusline you had before) and deletes the scripts; other settings stay untouched.
+- `build.ps1` runs on Windows, macOS and Linux (`pwsh ./build.ps1`).
+
+### Fixed
+- **Backup lost on re-install:** every run overwrote `settings.json.bak`, so after a second
+  run it no longer contained your original settings. The backup is now only written while
+  this statusline is not yet registered.
+- **Windows Store Python placeholder:** `install.ps1` took the `python.exe` stub for a real
+  Python and failed its smoke test instead of falling back. Installers now verify that
+  Node (≥ 12) / Python (≥ 3.6) actually run — also covers the macOS `python3` stub.
+- **Spaces in the Windows user name:** Windows PowerShell 5.1 strips double quotes from
+  arguments to native programs, so the script path could end up unquoted in
+  `settings.json`. The merge now receives it via an environment variable.
+- `install.ps1` no longer closes the PowerShell window on an error when run via `irm | iex`.
+- **Subagents waiting on a long tool call** (> 45 s, e.g. a build) disappeared from the
+  counter. They now stay counted for up to 10 minutes while a tool call is pending.
+
 ## 1.1.0
 
 ### Added
