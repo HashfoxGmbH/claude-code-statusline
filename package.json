@@ -1,7 +1,7 @@
 {
-  "name": "@hashox/claude-code-statusline",
-  "version": "1.1.0",
-  "description": "Fast, resume-safe statusline for Claude Code: model, thinking mode (effort / fast mode), context usage bar, free tokens, running subagents, session cost and git branch. Zero required dependencies on Windows.",
+  "name": "@hashfox/claude-code-statusline",
+  "version": "1.2.0",
+  "description": "Fast, resume-safe statusline for Claude Code: model, thinking mode (effort / fast mode), context usage bar, free tokens, rate limits, running subagents, session cost and git branch. Zero required dependencies on Windows.",
   "bin": {
     "claude-code-statusline": "bin/install.js"
   },

@@ -1,37 +1,246 @@
-# Generiert install.ps1 und install.sh aus den Quellen in src/.
-# Nach jeder Aenderung an src/statusline.{js,py,ps1} ausfuehren, damit die
-# selbst-enthaltenen Installer synchron bleiben.
+# Generates install.ps1 and install.sh from the sources in src/.
+# Run after every change to src/statusline.{js,py,ps1} so the self-contained
+# installers stay in sync. Works with Windows PowerShell 5.1 and PowerShell 7
+# on Windows, macOS and Linux:  pwsh ./build.ps1
 #
-# Die Templates nutzen <HSOPEN>/<HSCLOSE>-Platzhalter statt echter Here-String-
-# Delimiter, weil sich Here-Strings in PowerShell nicht verschachteln lassen.
+# The templates use <HSOPEN>/<HSCLOSE> placeholders instead of real here-string
+# delimiters because PowerShell here-strings cannot be nested.
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+$src = Join-Path $root 'src'
 
-$js = (Get-Content "$root\src\statusline.js" -Raw).TrimEnd()
-$py = (Get-Content "$root\src\statusline.py" -Raw).TrimEnd()
-$ps = (Get-Content "$root\src\statusline.ps1" -Raw).TrimEnd()
+$js = (Get-Content -LiteralPath (Join-Path $src 'statusline.js') -Raw).TrimEnd()
+$py = (Get-Content -LiteralPath (Join-Path $src 'statusline.py') -Raw).TrimEnd()
+$ps = (Get-Content -LiteralPath (Join-Path $src 'statusline.ps1') -Raw).TrimEnd()
+
+# Shared settings.json merge logic (install / uninstall), used by both installers.
+$mergeJs = @'
+// Merge settings.json. Mode, command and settings path come in via environment
+// variables because Windows PowerShell 5.1 strips double quotes from arguments
+// passed to node.
+// Exit codes: 0 = ok, 1 = error, 3 = uninstall: no statusline of ours registered.
+const fs = require('fs'), os = require('os'), path = require('path');
+const p = process.env.CLAUDE_STATUSLINE_SETTINGS || path.join(os.homedir(), '.claude', 'settings.json');
+const bak = p + '.bak';
+const mode = process.env.CLAUDE_STATUSLINE_MODE;
+const cmd = process.env.CLAUDE_STATUSLINE_CMD;
+const load = (f) => {
+  let raw = fs.readFileSync(f, 'utf8');
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  return raw.trim() ? JSON.parse(raw) : {};
+};
+const ours = (s) => !!(s && s.statusLine && typeof s.statusLine === 'object'
+  && /[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b/.test(String(s.statusLine.command)));
+const save = (s) => fs.writeFileSync(p, JSON.stringify(s, null, 2) + '\n');
+let s = {};
+if (fs.existsSync(p)) {
+  try {
+    s = load(p);
+    if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('not a JSON object');
+  } catch (e) { console.error('settings.json is not valid JSON: ' + e.message); process.exit(1); }
+}
+if (mode === 'uninstall') {
+  if (!ours(s)) process.exit(3);
+  // Restore a statusLine the user had before installing, taken from the backup
+  let prev = null;
+  try { const b = load(bak); if (b && b.statusLine && !ours(b)) prev = b.statusLine; } catch (e) { /* no backup */ }
+  if (prev) s.statusLine = prev; else delete s.statusLine;
+  save(s);
+  console.log(prev ? 'Restored your previous statusLine from settings.json.bak.' : 'Removed statusLine from settings.json.');
+} else {
+  // Back up only a state WITHOUT this statusline: re-running the installer must not
+  // overwrite the original backup with already-modified settings.
+  if (fs.existsSync(p) && !ours(s)) fs.copyFileSync(p, bak);
+  s.statusLine = { type: 'command', command: cmd, padding: 0 };
+  save(s);
+}
+'@.TrimEnd()
+$mergePy = @'
+# Merge settings.json. Mode, command and settings path come in via environment variables.
+# Exit codes: 0 = ok, 1 = error, 3 = uninstall: no statusline of ours registered.
+import json, os, re, shutil, sys
+p = os.environ.get('CLAUDE_STATUSLINE_SETTINGS') or os.path.expanduser('~/.claude/settings.json')
+bak = p + '.bak'
+mode = os.environ.get('CLAUDE_STATUSLINE_MODE')
+cmd = os.environ.get('CLAUDE_STATUSLINE_CMD')
+
+def load(f):
+    with open(f, encoding='utf-8-sig') as fh:
+        raw = fh.read()
+    return json.loads(raw) if raw.strip() else {}
+
+def ours(s):
+    sl = s.get('statusLine') if isinstance(s, dict) else None
+    return isinstance(sl, dict) and re.search(r'[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b', str(sl.get('command'))) is not None
+
+def save(s):
+    with open(p, 'w', encoding='utf-8') as f:
+        json.dump(s, f, indent=2, ensure_ascii=False)
+        f.write('\n')
+
+s = {}
+if os.path.exists(p):
+    try:
+        s = load(p)
+        if not isinstance(s, dict):
+            raise ValueError('not a JSON object')
+    except Exception as e:
+        print('settings.json is not valid JSON: %s' % e, file=sys.stderr)
+        sys.exit(1)
+if mode == 'uninstall':
+    if not ours(s):
+        sys.exit(3)
+    # Restore a statusLine the user had before installing, taken from the backup
+    prev = None
+    try:
+        b = load(bak)
+        if isinstance(b, dict) and b.get('statusLine') and not ours(b):
+            prev = b['statusLine']
+    except Exception:
+        pass
+    if prev:
+        s['statusLine'] = prev
+    else:
+        s.pop('statusLine', None)
+    save(s)
+    print('Restored your previous statusLine from settings.json.bak.' if prev else 'Removed statusLine from settings.json.')
+else:
+    # Back up only a state WITHOUT this statusline: re-running the installer must not
+    # overwrite the original backup with already-modified settings.
+    if os.path.exists(p) and not ours(s):
+        shutil.copy(p, bak)
+    s['statusLine'] = {'type': 'command', 'command': cmd, 'padding': 0}
+    save(s)
+'@.TrimEnd()
 
 # ---------- install.ps1 (Windows) ----------
 $ps1Template = @'
-# Claude Code Statusline - Installer (Windows)
-# Zeigt Modell, Context-Verbrauch (%, Balken, free), laufende Subagenten,
-# Kosten, Zeilen und Laufzeit unter der Eingabezeile jeder Claude-Code-Session.
+# Claude Code Statusline - installer (Windows)
+# Shows model, thinking mode, context usage (%, bar, free), rate limits, running
+# subagents, cost, lines and runtime below the input line of every Claude Code session.
 #
-# Laeuft ohne Zusatzinstallation: nutzt Node.js oder Python falls vorhanden,
-# sonst die reine PowerShell-Variante (auf jedem Windows verfuegbar).
+# Needs nothing extra: uses Node.js or Python if present, otherwise the pure
+# PowerShell variant (available on every Windows).
 #
-# Nutzung:  powershell -ExecutionPolicy Bypass -File install.ps1
-#   oder:   irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1 | iex
+# Install:    irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1 | iex
+#   or:       powershell -ExecutionPolicy Bypass -File install.ps1
+# Uninstall:  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1))) -Uninstall
+#   or:       powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
+param([switch]$Uninstall)
 $ErrorActionPreference = 'Stop'
+if ($env:CLAUDE_STATUSLINE_UNINSTALL -eq '1') { $Uninstall = $true }
 
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
 New-Item -ItemType Directory -Force $claudeDir | Out-Null
-# Forward-Slashes: Claude Code fuehrt den Befehl unter Windows via Git Bash
-# oder PowerShell aus; mit / funktioniert der Pfad in beiden.
+# Forward slashes: on Windows Claude Code runs the command via Git Bash or
+# PowerShell; a path with / works in both.
 $claudeDirFwd = $claudeDir -replace '\\', '/'
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
-$node = Get-Command node -ErrorAction SilentlyContinue
-$python = Get-Command python -ErrorAction SilentlyContinue
+function Test-StatuslineRuntime([string]$exe, [string[]]$argList) {
+    # Does the command exist AND actually run? The Microsoft Store placeholder
+    # python.exe (WindowsApps) exists on many machines but only opens the Store.
+    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        $null = & $exe @argList 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+# No double quotes inside these arguments: Windows PowerShell 5.1 strips them.
+$node = Test-StatuslineRuntime 'node' @('-e', 'process.exit(parseInt(process.versions.node) >= 12 ? 0 : 1)')
+$python = Test-StatuslineRuntime 'python' @('-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)')
+
+$mergeJs = <HSOPEN>
+__MERGE_JS__
+<HSCLOSE>
+$mergePy = <HSOPEN>
+__MERGE_PY__
+<HSCLOSE>
+
+function Test-StatuslineOurs($s) {
+    return [bool]($s -and $s.statusLine -and ("$($s.statusLine.command)" -match '[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b'))
+}
+
+function Read-StatuslineSettings([string]$path) {
+    $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if (-not $raw -or -not $raw.Trim()) { return New-Object PSObject }
+    $obj = $raw | ConvertFrom-Json
+    if ($obj -isnot [System.Management.Automation.PSCustomObject]) { throw 'not a JSON object' }
+    return $obj
+}
+
+function Invoke-StatuslineMergePs([string]$mode, [string]$cmd) {
+    # Same logic as the Node/Python merge scripts, for machines without either.
+    $settingsPath = Join-Path $claudeDir 'settings.json'
+    $bakPath = "$settingsPath.bak"
+    $settings = New-Object PSObject
+    if (Test-Path -LiteralPath $settingsPath) {
+        try { $settings = Read-StatuslineSettings $settingsPath }
+        catch { Write-Host "settings.json is not valid JSON: $($_.Exception.Message)"; return 1 }
+    }
+    if ($mode -eq 'uninstall') {
+        if (-not (Test-StatuslineOurs $settings)) { return 3 }
+        $prev = $null
+        try {
+            $b = Read-StatuslineSettings $bakPath
+            if ($b.statusLine -and -not (Test-StatuslineOurs $b)) { $prev = $b.statusLine }
+        } catch { }
+        if ($prev) { $settings | Add-Member NoteProperty statusLine $prev -Force }
+        else { $settings.PSObject.Properties.Remove('statusLine') }
+        if ($prev) { Write-Host 'Restored your previous statusLine from settings.json.bak.' }
+        else { Write-Host 'Removed statusLine from settings.json.' }
+    } else {
+        # Back up only a state WITHOUT this statusline (see merge scripts).
+        if ((Test-Path -LiteralPath $settingsPath) -and -not (Test-StatuslineOurs $settings)) {
+            Copy-Item -LiteralPath $settingsPath $bakPath -Force
+        }
+        $statusLine = New-Object PSObject
+        $statusLine | Add-Member NoteProperty type 'command'
+        $statusLine | Add-Member NoteProperty command $cmd
+        $statusLine | Add-Member NoteProperty padding 0
+        $settings | Add-Member NoteProperty statusLine $statusLine -Force
+    }
+    [System.IO.File]::WriteAllText($settingsPath, (($settings | ConvertTo-Json -Depth 100) + "`n"), $utf8NoBom)
+    return 0
+}
+
+function Invoke-StatuslineMerge([string]$mode, [string]$cmd) {
+    if (-not ($node -or $python)) { return (Invoke-StatuslineMergePs $mode $cmd) }
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('claude-statusline-merge-' + [guid]::NewGuid().ToString('N'))
+    $mergeFile = $null
+    $env:CLAUDE_STATUSLINE_MODE = $mode
+    $env:CLAUDE_STATUSLINE_CMD = $cmd
+    $env:CLAUDE_STATUSLINE_SETTINGS = Join-Path $claudeDir 'settings.json'
+    try {
+        if ($node) {
+            $mergeFile = "$tmp.js"
+            [System.IO.File]::WriteAllText($mergeFile, $mergeJs, $utf8NoBom)
+            & node $mergeFile | Write-Host
+        } else {
+            $mergeFile = "$tmp.py"
+            [System.IO.File]::WriteAllText($mergeFile, $mergePy, $utf8NoBom)
+            & python $mergeFile | Write-Host
+        }
+        return $LASTEXITCODE
+    } finally {
+        Remove-Item Env:CLAUDE_STATUSLINE_MODE, Env:CLAUDE_STATUSLINE_CMD, Env:CLAUDE_STATUSLINE_SETTINGS -ErrorAction SilentlyContinue
+        if ($mergeFile) { Remove-Item -LiteralPath $mergeFile -ErrorAction SilentlyContinue }
+    }
+}
+
+if ($Uninstall) {
+    $rc = Invoke-StatuslineMerge 'uninstall' ''
+    if ($rc -eq 3) {
+        Write-Host 'This statusline is not registered in settings.json - nothing to do.'
+        return
+    }
+    if ($rc -ne 0) { throw 'Could not update settings.json.' }
+    foreach ($ext in 'js', 'py', 'ps1') {
+        Remove-Item -LiteralPath (Join-Path $claudeDir "statusline.$ext") -ErrorAction SilentlyContinue
+    }
+    Write-Host 'Statusline uninstalled. Restart running Claude Code sessions to apply.'
+    return
+}
 
 $statuslineJs = <HSOPEN>
 __JS__
@@ -45,8 +254,6 @@ $statuslinePs = <HSOPEN>
 __PS__
 <HSCLOSE>
 
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
 if ($node) {
     $scriptPath = Join-Path $claudeDir 'statusline.js'
     [System.IO.File]::WriteAllText($scriptPath, $statuslineJs, $utf8NoBom)
@@ -58,126 +265,106 @@ if ($node) {
     $cmd = 'python "' + $claudeDirFwd + '/statusline.py"'
     $runtime = 'Python'
 } else {
-    # Zero-Dependency-Fallback: PowerShell ist auf jedem Windows vorhanden.
-    # Alle Skripte sind ASCII-only, daher ist kein BOM noetig.
+    # Zero-dependency fallback: PowerShell exists on every Windows.
+    # All scripts are ASCII-only, so no BOM is needed.
     $scriptPath = Join-Path $claudeDir 'statusline.ps1'
     [System.IO.File]::WriteAllText($scriptPath, $statuslinePs, $utf8NoBom)
     $cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $claudeDirFwd + '/statusline.ps1"'
     $runtime = 'PowerShell'
 }
 
-# settings.json mergen (bestehende Einstellungen bleiben erhalten, Backup als .bak)
 $settingsPath = Join-Path $claudeDir 'settings.json'
-$mergeJs = <HSOPEN>
-const fs = require('fs'), os = require('os'), path = require('path');
-const p = path.join(os.homedir(), '.claude', 'settings.json');
-const cmd = process.argv[2];
-let s = {};
-if (fs.existsSync(p)) {
-  try {
-    const raw = fs.readFileSync(p, 'utf8');
-    s = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
-    fs.copyFileSync(p, p + '.bak');
-  }
-  catch (e) { console.error('settings.json ist kein gueltiges JSON: ' + e.message); process.exit(1); }
-}
-s.statusLine = { type: 'command', command: cmd, padding: 0 };
-fs.writeFileSync(p, JSON.stringify(s, null, 2) + '\n');
-<HSCLOSE>
-$mergePy = <HSOPEN>
-import json, os, shutil, sys
-p = os.path.expanduser('~/.claude/settings.json')
-s = {}
-if os.path.exists(p):
-    try:
-        with open(p, encoding='utf-8-sig') as f:
-            s = json.load(f)
-        shutil.copy(p, p + '.bak')
-    except Exception as e:
-        print('settings.json ist kein gueltiges JSON: %s' % e, file=sys.stderr)
-        sys.exit(1)
-s['statusLine'] = {'type': 'command', 'command': sys.argv[1], 'padding': 0}
-with open(p, 'w', encoding='utf-8') as f:
-    json.dump(s, f, indent=2)
-    f.write('\n')
-<HSCLOSE>
+if ((Invoke-StatuslineMerge 'install' $cmd) -ne 0) { throw 'Could not update settings.json.' }
 
-if ($node -or $python) {
-    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("claude-statusline-merge-" + [guid]::NewGuid().ToString('N'))
-    $mergeFile = $null
-    try {
-        if ($node) {
-            $mergeFile = "$tmp.js"
-            [System.IO.File]::WriteAllText($mergeFile, $mergeJs, $utf8NoBom)
-            & node $mergeFile $cmd
-        } else {
-            $mergeFile = "$tmp.py"
-            [System.IO.File]::WriteAllText($mergeFile, $mergePy, $utf8NoBom)
-            & python $mergeFile $cmd
-        }
-        if ($LASTEXITCODE -ne 0) { throw 'settings.json konnte nicht aktualisiert werden.' }
-    } finally {
-        if ($mergeFile) { Remove-Item $mergeFile -ErrorAction SilentlyContinue }
-    }
-} else {
-    # Merge in purem PowerShell (kein Node/Python vorhanden)
-    $settings = New-Object PSObject
-    if (Test-Path $settingsPath) {
-        try {
-            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
-            Copy-Item $settingsPath "$settingsPath.bak" -Force
-        } catch {
-            Write-Error "settings.json ist kein gueltiges JSON: $($_.Exception.Message)"
-            exit 1
-        }
-    }
-    $statusLine = New-Object PSObject
-    $statusLine | Add-Member NoteProperty type 'command'
-    $statusLine | Add-Member NoteProperty command $cmd
-    $statusLine | Add-Member NoteProperty padding 0
-    $settings | Add-Member NoteProperty statusLine $statusLine -Force
-    [System.IO.File]::WriteAllText($settingsPath, (($settings | ConvertTo-Json -Depth 100) + "`n"), $utf8NoBom)
-}
-
-# Smoke-Test
+# Smoke test
 $samplePath = Join-Path ([System.IO.Path]::GetTempPath()) 'claude-statusline-sample.json'
 [System.IO.File]::WriteAllText($samplePath, '{"model":{"display_name":"Test"},"context_window":{"context_window_size":200000,"total_input_tokens":50000}}', $utf8NoBom)
 try {
-    if ($node) { $out = Get-Content $samplePath -Raw | & node $scriptPath }
-    elseif ($python) { $out = Get-Content $samplePath -Raw | & python $scriptPath }
-    else { $out = cmd /c "type `"$samplePath`" | powershell -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`"" }
+    if ($node) { $out = Get-Content -LiteralPath $samplePath -Raw | & node $scriptPath }
+    elseif ($python) { $out = Get-Content -LiteralPath $samplePath -Raw | & python $scriptPath }
+    else { $out = Get-Content -LiteralPath $samplePath -Raw | & powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath }
 } finally {
-    Remove-Item $samplePath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $samplePath -ErrorAction SilentlyContinue
 }
-if (-not $out) { throw 'Smoke-Test fehlgeschlagen: keine Ausgabe.' }
+if (-not $out) { throw 'Smoke test failed: no output.' }
 
 Write-Host ''
-Write-Host "Statusline installiert ($runtime): $scriptPath"
-Write-Host "settings.json aktualisiert: $settingsPath (Backup: settings.json.bak)"
-Write-Host "Testausgabe:  $out"
-Write-Host 'Fertig. Neue Claude-Code-Sessions zeigen die Statusline an; laufende nach Neustart der Session.'
+Write-Host "Statusline installed ($runtime): $scriptPath"
+Write-Host "settings.json updated: $settingsPath (backup: settings.json.bak)"
+Write-Host "Test output:  $out"
+Write-Host 'Done. New Claude Code sessions show the statusline; running sessions after a restart.'
 '@
 
 # ---------- install.sh (Linux / WSL / macOS) ----------
 $shTemplate = @'
 #!/usr/bin/env bash
-# Claude Code Statusline - Installer (Linux / WSL / macOS)
-# Zeigt Modell, Context-Verbrauch (%, Balken, free), laufende Subagenten,
-# Kosten, Zeilen und Laufzeit unter der Eingabezeile jeder Claude-Code-Session.
-# Nutzung:  bash install.sh
-#   oder:   curl -fsSL https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.sh | bash
+# Claude Code Statusline - installer (Linux / WSL / macOS)
+# Shows model, thinking mode, context usage (%, bar, free), rate limits, running
+# subagents, cost, lines and runtime below the input line of every Claude Code session.
+#
+# Install:    curl -fsSL https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.sh | bash
+#   or:       bash install.sh
+# Uninstall:  curl -fsSL https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.sh | bash -s -- --uninstall
+#   or:       bash install.sh --uninstall
 set -euo pipefail
+
+UNINSTALL=0
+for arg in "$@"; do
+    case "$arg" in
+        --uninstall) UNINSTALL=1 ;;
+        *) echo "Unknown option: $arg" >&2; exit 1 ;;
+    esac
+done
+[ "${CLAUDE_STATUSLINE_UNINSTALL:-}" = "1" ] && UNINSTALL=1
 
 CLAUDE_DIR="$HOME/.claude"
 mkdir -p "$CLAUDE_DIR"
 
-if command -v python3 >/dev/null 2>&1; then
+# Check that the runtime actually runs (e.g. the macOS /usr/bin/python3 stub
+# without Command Line Tools exists but fails) and is recent enough.
+have_python() {
+    command -v python3 >/dev/null 2>&1 \
+        && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)' >/dev/null 2>&1
+}
+have_node() {
+    command -v node >/dev/null 2>&1 \
+        && node -e 'process.exit(parseInt(process.versions.node) >= 12 ? 0 : 1)' >/dev/null 2>&1
+}
+
+if have_python; then
     RUNTIME=python3
-elif command -v node >/dev/null 2>&1; then
+elif have_node; then
     RUNTIME=node
 else
-    echo "Weder python3 noch node gefunden - bitte eines von beiden installieren." >&2
+    echo "Neither python3 (>= 3.6) nor node (>= 12) found - please install one of them." >&2
     exit 1
+fi
+
+CMD=""
+merge() {
+    # $1 = install | uninstall. Exit codes: 0 = ok, 1 = error, 3 = nothing of ours registered.
+    if [ "$RUNTIME" = "python3" ]; then
+        CLAUDE_STATUSLINE_MODE="$1" CLAUDE_STATUSLINE_CMD="$CMD" CLAUDE_STATUSLINE_SETTINGS="$CLAUDE_DIR/settings.json" python3 - <<'MERGE_EOF'
+__MERGE_PY__
+MERGE_EOF
+    else
+        CLAUDE_STATUSLINE_MODE="$1" CLAUDE_STATUSLINE_CMD="$CMD" CLAUDE_STATUSLINE_SETTINGS="$CLAUDE_DIR/settings.json" node - <<'MERGE_EOF'
+__MERGE_JS__
+MERGE_EOF
+    fi
+}
+
+if [ "$UNINSTALL" = "1" ]; then
+    rc=0
+    merge uninstall || rc=$?
+    if [ "$rc" = "3" ]; then
+        echo "This statusline is not registered in settings.json - nothing to do."
+        exit 0
+    fi
+    [ "$rc" = "0" ] || { echo "Could not update settings.json." >&2; exit 1; }
+    rm -f "$CLAUDE_DIR/statusline.py" "$CLAUDE_DIR/statusline.js" "$CLAUDE_DIR/statusline.ps1"
+    echo "Statusline uninstalled. Restart running Claude Code sessions to apply."
+    exit 0
 fi
 
 cat > "$CLAUDE_DIR/statusline.py" <<'STATUSLINE_PY_EOF'
@@ -196,65 +383,28 @@ else
     SCRIPT="$CLAUDE_DIR/statusline.js"
 fi
 
-merge_py() {
-python3 - "$CMD" <<'MERGE_EOF'
-import json, os, shutil, sys
-p = os.path.expanduser('~/.claude/settings.json')
-s = {}
-if os.path.exists(p):
-    try:
-        with open(p, encoding='utf-8-sig') as f:
-            s = json.load(f)
-        shutil.copy(p, p + '.bak')
-    except Exception as e:
-        print('settings.json ist kein gueltiges JSON: %s' % e, file=sys.stderr)
-        sys.exit(1)
-s['statusLine'] = {'type': 'command', 'command': sys.argv[1], 'padding': 0}
-with open(p, 'w', encoding='utf-8') as f:
-    json.dump(s, f, indent=2)
-    f.write('\n')
-MERGE_EOF
-}
-
-merge_node() {
-node - "$CMD" <<'MERGE_EOF'
-const fs = require('fs'), os = require('os'), path = require('path');
-const p = path.join(os.homedir(), '.claude', 'settings.json');
-const cmd = process.argv[2];
-let s = {};
-if (fs.existsSync(p)) {
-  try {
-    const raw = fs.readFileSync(p, 'utf8');
-    s = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
-    fs.copyFileSync(p, p + '.bak');
-  }
-  catch (e) { console.error('settings.json ist kein gueltiges JSON: ' + e.message); process.exit(1); }
-}
-s.statusLine = { type: 'command', command: cmd, padding: 0 };
-fs.writeFileSync(p, JSON.stringify(s, null, 2) + '\n');
-MERGE_EOF
-}
-
-if [ "$RUNTIME" = "python3" ]; then merge_py; else merge_node; fi
+merge install
 
 OUT=$(echo '{"model":{"display_name":"Test"},"context_window":{"context_window_size":200000,"total_input_tokens":50000}}' | $RUNTIME "$SCRIPT")
-[ -n "$OUT" ] || { echo "Smoke-Test fehlgeschlagen: keine Ausgabe." >&2; exit 1; }
+[ -n "$OUT" ] || { echo "Smoke test failed: no output." >&2; exit 1; }
 
 echo ""
-echo "Statusline installiert ($RUNTIME): $SCRIPT"
-echo "settings.json aktualisiert (Backup: settings.json.bak)"
-echo "Testausgabe:  $OUT"
-echo "Fertig. Neue Claude-Code-Sessions zeigen die Statusline an; laufende nach Neustart der Session."
+echo "Statusline installed ($RUNTIME): $SCRIPT"
+echo "settings.json updated (backup: settings.json.bak)"
+echo "Test output:  $OUT"
+echo "Done. New Claude Code sessions show the statusline; running sessions after a restart."
 '@
 
-$ps1 = $ps1Template.Replace('__JS__', $js).Replace('__PY__', $py).Replace('__PS__', $ps).Replace('<HSOPEN>', "@'").Replace('<HSCLOSE>', "'@")
-$sh = $shTemplate.Replace('__PY__', $py).Replace('__JS__', $js)
+$ps1 = $ps1Template.Replace('__MERGE_JS__', $mergeJs).Replace('__MERGE_PY__', $mergePy).Replace('__JS__', $js).Replace('__PY__', $py).Replace('__PS__', $ps).Replace('<HSOPEN>', "@'").Replace('<HSCLOSE>', "'@")
+$sh = $shTemplate.Replace('__MERGE_JS__', $mergeJs).Replace('__MERGE_PY__', $mergePy).Replace('__PY__', $py).Replace('__JS__', $js)
 
-# Alles ASCII-only und OHNE BOM: install.ps1 funktioniert so identisch via
-# "-File" (PS 5.1/7) UND via "irm | iex" (BOM wuerde iex die erste Zeile
-# zerlegen); install.sh braucht LF-Zeilenenden (bash scheitert an CRLF).
+# Everything ASCII-only and WITHOUT a BOM: install.ps1 then works the same via
+# "-File" (PS 5.1/7) AND via "irm | iex" (a BOM would break the first line for
+# iex); install.sh needs LF line endings (bash fails on CRLF).
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText("$root\install.ps1", $ps1, $utf8NoBom)
-[System.IO.File]::WriteAllText("$root\install.sh", (($sh -replace "`r`n", "`n") + "`n"), $utf8NoBom)
+$ps1Path = Join-Path $root 'install.ps1'
+$shPath = Join-Path $root 'install.sh'
+[System.IO.File]::WriteAllText($ps1Path, (($ps1 -replace "`r`n", "`n") -replace "`n", "`r`n"), $utf8NoBom)
+[System.IO.File]::WriteAllText($shPath, (($sh -replace "`r`n", "`n") + "`n"), $utf8NoBom)
 
-Write-Host "Generiert: install.ps1 ($([math]::Round((Get-Item "$root\install.ps1").Length/1kb,1)) KB), install.sh ($([math]::Round((Get-Item "$root\install.sh").Length/1kb,1)) KB)"
+Write-Host "Generated: install.ps1 ($([math]::Round((Get-Item -LiteralPath $ps1Path).Length / 1kb, 1)) KB), install.sh ($([math]::Round((Get-Item -LiteralPath $shPath).Length / 1kb, 1)) KB)"
