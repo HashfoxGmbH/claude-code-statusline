@@ -189,10 +189,10 @@ __JS__
 STATUSLINE_JS_EOF
 
 if [ "$RUNTIME" = "python3" ]; then
-    CMD="python3 $HOME/.claude/statusline.py"
+    CMD="python3 \"$HOME/.claude/statusline.py\""
     SCRIPT="$CLAUDE_DIR/statusline.py"
 else
-    CMD="node $HOME/.claude/statusline.js"
+    CMD="node \"$HOME/.claude/statusline.js\""
     SCRIPT="$CLAUDE_DIR/statusline.js"
 fi
 
