@@ -26,10 +26,26 @@ function load(file) {
   return raw.trim() ? JSON.parse(raw) : {};
 }
 
+function ourFile(file) {
+  // Our scripts carry this header and a transcript fallback; a user's own
+  // ~/.claude/statusline.* with the same file name does not.
+  try {
+    const t = fs.readFileSync(file, 'utf8');
+    return /claude code statusline/i.test(t) && t.includes('isSidechain');
+  } catch (e) { return false; }
+}
+
+function target(sl) {
+  // The script file a statusLine points to, if it looks like ours: ~/.claude/statusline.<ext>
+  if (!sl || typeof sl !== 'object') return null;
+  const m = /[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b/i.exec(String(sl.command));
+  return m ? path.join(claudeDir, 'statusline.' + m[1].toLowerCase()) : null;
+}
+
 function ours(s) {
   // Is the registered statusLine one of this project's scripts?
-  return !!(s && s.statusLine && typeof s.statusLine === 'object'
-    && /[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b/.test(String(s.statusLine.command)));
+  const f = s ? target(s.statusLine) : null;
+  return !!f && (!fs.existsSync(f) || ourFile(f));
 }
 
 function loadSettings() {
@@ -46,16 +62,24 @@ function save(s) {
 
 function install() {
   fs.mkdirSync(claudeDir, { recursive: true });
-  fs.copyFileSync(src, dest);
 
   // Forward slashes: on Windows Claude Code runs the command via Git Bash or
   // PowerShell; a path with / works in both.
   const cmd = 'node "' + dest.replace(/\\/g, '/') + '"';
 
+  // Read settings first: an unreadable settings.json stops here, before any file is written.
   const settings = loadSettings();
   // Back up only a state WITHOUT this statusline: re-running the installer must
   // not overwrite the original backup with already-modified settings.
   if (fs.existsSync(settingsPath) && !ours(settings)) fs.copyFileSync(settingsPath, bakPath);
+
+  // A user's own script with the same name is set aside, not overwritten.
+  if (fs.existsSync(dest) && !ourFile(dest)) {
+    fs.copyFileSync(dest, dest + '.bak');
+    console.log('Backed up your existing ' + dest + ' to ' + dest + '.bak');
+  }
+  fs.copyFileSync(src, dest);
+
   settings.statusLine = { type: 'command', command: cmd, padding: 0 };
   save(settings);
 
@@ -78,16 +102,28 @@ function uninstall() {
     console.log('This statusline is not registered in settings.json - nothing to do.');
     return;
   }
-  // Restore a statusLine the user had before installing, taken from the backup
+  // Restore a statusLine the user had before installing, taken from the backup.
+  // One pointing to ~/.claude/statusline.* is only theirs if the installer
+  // backed up their own script of that name (statusline.<ext>.bak).
   let prev = null;
   try {
     const b = load(bakPath);
-    if (b && b.statusLine && !ours(b)) prev = b.statusLine;
+    if (b && b.statusLine && typeof b.statusLine === 'object') {
+      const f = target(b.statusLine);
+      if (!f || fs.existsSync(f + '.bak')) prev = b.statusLine;
+    }
   } catch (e) { /* no backup */ }
   if (prev) settings.statusLine = prev; else delete settings.statusLine;
   save(settings);
+  // Delete only our own scripts, and put back a user script the installer set aside.
   for (const ext of ['js', 'py', 'ps1']) {
-    try { fs.unlinkSync(path.join(claudeDir, 'statusline.' + ext)); } catch (e) { /* not present */ }
+    const f = path.join(claudeDir, 'statusline.' + ext);
+    if (!ourFile(f)) continue;
+    fs.unlinkSync(f);
+    if (fs.existsSync(f + '.bak')) {
+      fs.renameSync(f + '.bak', f);
+      console.log('Restored your own ' + f + '.');
+    }
   }
   console.log(prev ? 'Restored your previous statusLine from settings.json.bak.' : 'Removed statusLine from settings.json.');
   console.log('Statusline uninstalled. Restart running Claude Code sessions to apply.');

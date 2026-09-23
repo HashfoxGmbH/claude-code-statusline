@@ -10,7 +10,14 @@
 # Uninstall:  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.ps1))) -Uninstall
 #   or:       powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
 param([switch]$Uninstall)
+
+# Everything runs in a child scope: "irm | iex" executes in the caller's own
+# session, so preferences, variables and functions set here must not leak into
+# it. The body is not indented because here-string terminators must start a line.
+& {
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Off
+$PSNativeCommandUseErrorActionPreference = $false
 if ($env:CLAUDE_STATUSLINE_UNINSTALL -eq '1') { $Uninstall = $true }
 
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
@@ -18,11 +25,13 @@ New-Item -ItemType Directory -Force $claudeDir | Out-Null
 # Forward slashes: on Windows Claude Code runs the command via Git Bash or
 # PowerShell; a path with / works in both.
 $claudeDirFwd = $claudeDir -replace '\\', '/'
+$settingsPath = Join-Path $claudeDir 'settings.json'
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Test-StatuslineRuntime([string]$exe, [string[]]$argList) {
     # Does the command exist AND actually run? The Microsoft Store placeholder
     # python.exe (WindowsApps) exists on many machines but only opens the Store.
+    $ErrorActionPreference = 'Continue'   # stderr output must not count as failure
     if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { return $false }
     try {
         $null = & $exe @argList 2>$null
@@ -40,6 +49,7 @@ $mergeJs = @'
 // Exit codes: 0 = ok, 1 = error, 3 = uninstall: no statusline of ours registered.
 const fs = require('fs'), os = require('os'), path = require('path');
 const p = process.env.CLAUDE_STATUSLINE_SETTINGS || path.join(os.homedir(), '.claude', 'settings.json');
+const dir = path.dirname(p);
 const bak = p + '.bak';
 const mode = process.env.CLAUDE_STATUSLINE_MODE;
 const cmd = process.env.CLAUDE_STATUSLINE_CMD;
@@ -48,8 +58,22 @@ const load = (f) => {
   if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
   return raw.trim() ? JSON.parse(raw) : {};
 };
-const ours = (s) => !!(s && s.statusLine && typeof s.statusLine === 'object'
-  && /[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b/.test(String(s.statusLine.command)));
+// Our scripts carry this header and a transcript fallback; a user's own
+// ~/.claude/statusline.* with the same file name does not.
+const ourFile = (f) => {
+  try { const t = fs.readFileSync(f, 'utf8'); return /claude code statusline/i.test(t) && t.includes('isSidechain'); }
+  catch (e) { return false; }
+};
+// The script file a statusLine points to, if it looks like ours: ~/.claude/statusline.<ext>
+const target = (sl) => {
+  if (!sl || typeof sl !== 'object') return null;
+  const m = /[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b/i.exec(String(sl.command));
+  return m ? path.join(dir, 'statusline.' + m[1].toLowerCase()) : null;
+};
+const ours = (s) => {
+  const f = s ? target(s.statusLine) : null;
+  return !!f && (!fs.existsSync(f) || ourFile(f));
+};
 const save = (s) => fs.writeFileSync(p, JSON.stringify(s, null, 2) + '\n');
 let s = {};
 if (fs.existsSync(p)) {
@@ -60,9 +84,17 @@ if (fs.existsSync(p)) {
 }
 if (mode === 'uninstall') {
   if (!ours(s)) process.exit(3);
-  // Restore a statusLine the user had before installing, taken from the backup
+  // Restore a statusLine the user had before installing, taken from the backup.
+  // One pointing to ~/.claude/statusline.* is only theirs if the installer
+  // backed up their own script of that name (statusline.<ext>.bak).
   let prev = null;
-  try { const b = load(bak); if (b && b.statusLine && !ours(b)) prev = b.statusLine; } catch (e) { /* no backup */ }
+  try {
+    const b = load(bak);
+    if (b && b.statusLine && typeof b.statusLine === 'object') {
+      const f = target(b.statusLine);
+      if (!f || fs.existsSync(f + '.bak')) prev = b.statusLine;
+    }
+  } catch (e) { /* no backup */ }
   if (prev) s.statusLine = prev; else delete s.statusLine;
   save(s);
   console.log(prev ? 'Restored your previous statusLine from settings.json.bak.' : 'Removed statusLine from settings.json.');
@@ -79,6 +111,7 @@ $mergePy = @'
 # Exit codes: 0 = ok, 1 = error, 3 = uninstall: no statusline of ours registered.
 import json, os, re, shutil, sys
 p = os.environ.get('CLAUDE_STATUSLINE_SETTINGS') or os.path.expanduser('~/.claude/settings.json')
+d = os.path.dirname(p)
 bak = p + '.bak'
 mode = os.environ.get('CLAUDE_STATUSLINE_MODE')
 cmd = os.environ.get('CLAUDE_STATUSLINE_CMD')
@@ -88,9 +121,26 @@ def load(f):
         raw = fh.read()
     return json.loads(raw) if raw.strip() else {}
 
+def our_file(f):
+    # Our scripts carry this header and a transcript fallback; a user's own
+    # ~/.claude/statusline.* with the same file name does not.
+    try:
+        with open(f, encoding='utf-8', errors='replace') as fh:
+            t = fh.read()
+        return re.search(r'claude code statusline', t, re.I) is not None and 'isSidechain' in t
+    except Exception:
+        return False
+
+def target(sl):
+    # The script file a statusLine points to, if it looks like ours: ~/.claude/statusline.<ext>
+    if not isinstance(sl, dict):
+        return None
+    m = re.search(r'[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b', str(sl.get('command')), re.I)
+    return os.path.join(d, 'statusline.' + m.group(1).lower()) if m else None
+
 def ours(s):
-    sl = s.get('statusLine') if isinstance(s, dict) else None
-    return isinstance(sl, dict) and re.search(r'[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b', str(sl.get('command'))) is not None
+    f = target(s.get('statusLine')) if isinstance(s, dict) else None
+    return f is not None and (not os.path.exists(f) or our_file(f))
 
 def save(s):
     with open(p, 'w', encoding='utf-8') as f:
@@ -109,20 +159,24 @@ if os.path.exists(p):
 if mode == 'uninstall':
     if not ours(s):
         sys.exit(3)
-    # Restore a statusLine the user had before installing, taken from the backup
+    # Restore a statusLine the user had before installing, taken from the backup.
+    # One pointing to ~/.claude/statusline.* is only theirs if the installer
+    # backed up their own script of that name (statusline.<ext>.bak).
     prev = None
     try:
         b = load(bak)
-        if isinstance(b, dict) and b.get('statusLine') and not ours(b):
-            prev = b['statusLine']
+        if isinstance(b, dict) and isinstance(b.get('statusLine'), dict):
+            f = target(b['statusLine'])
+            if f is None or os.path.exists(f + '.bak'):
+                prev = b['statusLine']
     except Exception:
         pass
-    if prev:
+    if prev is not None:
         s['statusLine'] = prev
     else:
         s.pop('statusLine', None)
     save(s)
-    print('Restored your previous statusLine from settings.json.bak.' if prev else 'Removed statusLine from settings.json.')
+    print('Restored your previous statusLine from settings.json.bak.' if prev is not None else 'Removed statusLine from settings.json.')
 else:
     # Back up only a state WITHOUT this statusline: re-running the installer must not
     # overwrite the original backup with already-modified settings.
@@ -132,8 +186,27 @@ else:
     save(s)
 '@
 
+function Test-StatuslineFile([string]$path) {
+    # Our scripts carry this header and a transcript fallback; a user's own
+    # ~/.claude/statusline.* with the same file name does not.
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    $t = [System.IO.File]::ReadAllText($path)
+    return ($t -match 'claude code statusline') -and $t.Contains('isSidechain')
+}
+
+function Get-StatuslineTarget($sl) {
+    # The script file a statusLine points to, if it looks like ours: ~/.claude/statusline.<ext>
+    if ($sl -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+    if ("$($sl.command)" -match '[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b') {
+        return (Join-Path $claudeDir ('statusline.' + $Matches[1].ToLowerInvariant()))
+    }
+    return $null
+}
+
 function Test-StatuslineOurs($s) {
-    return [bool]($s -and $s.statusLine -and ("$($s.statusLine.command)" -match '[\\/]\.claude[\\/]statusline\.(js|py|ps1)\b'))
+    if (-not $s) { return $false }
+    $f = Get-StatuslineTarget $s.statusLine
+    return [bool]($f -and (-not (Test-Path -LiteralPath $f) -or (Test-StatuslineFile $f)))
 }
 
 function Read-StatuslineSettings([string]$path) {
@@ -146,24 +219,32 @@ function Read-StatuslineSettings([string]$path) {
 
 function Invoke-StatuslineMergePs([string]$mode, [string]$cmd) {
     # Same logic as the Node/Python merge scripts, for machines without either.
-    $settingsPath = Join-Path $claudeDir 'settings.json'
+    # Best effort: ConvertFrom-Json rejects keys that differ only in case.
     $bakPath = "$settingsPath.bak"
     $settings = New-Object PSObject
     if (Test-Path -LiteralPath $settingsPath) {
         try { $settings = Read-StatuslineSettings $settingsPath }
-        catch { Write-Host "settings.json is not valid JSON: $($_.Exception.Message)"; return 1 }
+        catch { Write-Host "settings.json could not be read: $($_.Exception.Message)"; return 1 }
     }
     if ($mode -eq 'uninstall') {
         if (-not (Test-StatuslineOurs $settings)) { return 3 }
+        # A backed-up statusLine pointing to ~/.claude/statusline.* is only the
+        # user's if the installer backed up their own script of that name.
         $prev = $null
         try {
             $b = Read-StatuslineSettings $bakPath
-            if ($b.statusLine -and -not (Test-StatuslineOurs $b)) { $prev = $b.statusLine }
+            if ($b.statusLine -is [System.Management.Automation.PSCustomObject]) {
+                $f = Get-StatuslineTarget $b.statusLine
+                if (-not $f -or (Test-Path -LiteralPath "$f.bak")) { $prev = $b.statusLine }
+            }
         } catch { }
-        if ($prev) { $settings | Add-Member NoteProperty statusLine $prev -Force }
-        else { $settings.PSObject.Properties.Remove('statusLine') }
-        if ($prev) { Write-Host 'Restored your previous statusLine from settings.json.bak.' }
-        else { Write-Host 'Removed statusLine from settings.json.' }
+        if ($null -ne $prev) {
+            $settings | Add-Member NoteProperty statusLine $prev -Force
+            Write-Host 'Restored your previous statusLine from settings.json.bak.'
+        } else {
+            $settings.PSObject.Properties.Remove('statusLine')
+            Write-Host 'Removed statusLine from settings.json.'
+        }
     } else {
         # Back up only a state WITHOUT this statusline (see merge scripts).
         if ((Test-Path -LiteralPath $settingsPath) -and -not (Test-StatuslineOurs $settings)) {
@@ -185,7 +266,7 @@ function Invoke-StatuslineMerge([string]$mode, [string]$cmd) {
     $mergeFile = $null
     $env:CLAUDE_STATUSLINE_MODE = $mode
     $env:CLAUDE_STATUSLINE_CMD = $cmd
-    $env:CLAUDE_STATUSLINE_SETTINGS = Join-Path $claudeDir 'settings.json'
+    $env:CLAUDE_STATUSLINE_SETTINGS = $settingsPath
     try {
         if ($node) {
             $mergeFile = "$tmp.js"
@@ -210,12 +291,44 @@ if ($Uninstall) {
         return
     }
     if ($rc -ne 0) { throw 'Could not update settings.json.' }
+    # Delete only our own scripts, and put back a user script the installer set aside.
     foreach ($ext in 'js', 'py', 'ps1') {
-        Remove-Item -LiteralPath (Join-Path $claudeDir "statusline.$ext") -ErrorAction SilentlyContinue
+        $f = Join-Path $claudeDir "statusline.$ext"
+        if (Test-StatuslineFile $f) {
+            Remove-Item -LiteralPath $f
+            if (Test-Path -LiteralPath "$f.bak") {
+                Move-Item -LiteralPath "$f.bak" $f
+                Write-Host "Restored your own $f."
+            }
+        }
     }
     Write-Host 'Statusline uninstalled. Restart running Claude Code sessions to apply.'
     return
 }
+
+if ($node) {
+    $scriptPath = Join-Path $claudeDir 'statusline.js'
+    $cmd = 'node "' + $claudeDirFwd + '/statusline.js"'
+    $runtime = 'Node.js'
+} elseif ($python) {
+    $scriptPath = Join-Path $claudeDir 'statusline.py'
+    $cmd = 'python "' + $claudeDirFwd + '/statusline.py"'
+    $runtime = 'Python'
+} else {
+    # Zero-dependency fallback: PowerShell exists on every Windows.
+    $scriptPath = Join-Path $claudeDir 'statusline.ps1'
+    $cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $claudeDirFwd + '/statusline.ps1"'
+    $runtime = 'PowerShell'
+}
+
+# A user's own script with the same name is set aside, not overwritten.
+if ((Test-Path -LiteralPath $scriptPath) -and -not (Test-StatuslineFile $scriptPath)) {
+    Copy-Item -LiteralPath $scriptPath "$scriptPath.bak" -Force
+    Write-Host "Backed up your existing $scriptPath to $scriptPath.bak"
+}
+
+# Merge settings first: an unreadable settings.json stops here, before any file is written.
+if ((Invoke-StatuslineMerge 'install' $cmd) -ne 0) { throw 'Could not update settings.json.' }
 
 $statuslineJs = @'
 #!/usr/bin/env node
@@ -1232,45 +1345,22 @@ try {
 }
 '@
 
-if ($node) {
-    $scriptPath = Join-Path $claudeDir 'statusline.js'
-    [System.IO.File]::WriteAllText($scriptPath, $statuslineJs, $utf8NoBom)
-    $cmd = 'node "' + $claudeDirFwd + '/statusline.js"'
-    $runtime = 'Node.js'
-} elseif ($python) {
-    $scriptPath = Join-Path $claudeDir 'statusline.py'
-    [System.IO.File]::WriteAllText($scriptPath, $statuslinePy, $utf8NoBom)
-    $cmd = 'python "' + $claudeDirFwd + '/statusline.py"'
-    $runtime = 'Python'
-} else {
-    # Zero-dependency fallback: PowerShell exists on every Windows.
-    # All scripts are ASCII-only, so no BOM is needed.
-    $scriptPath = Join-Path $claudeDir 'statusline.ps1'
-    [System.IO.File]::WriteAllText($scriptPath, $statuslinePs, $utf8NoBom)
-    $cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $claudeDirFwd + '/statusline.ps1"'
-    $runtime = 'PowerShell'
-}
+# All scripts are ASCII-only, so no BOM is needed.
+$content = if ($node) { $statuslineJs } elseif ($python) { $statuslinePy } else { $statuslinePs }
+[System.IO.File]::WriteAllText($scriptPath, $content, $utf8NoBom)
 
-$settingsPath = Join-Path $claudeDir 'settings.json'
-if ((Invoke-StatuslineMerge 'install' $cmd) -ne 0) { throw 'Could not update settings.json.' }
-
-# Smoke test
+# Smoke test. The statusline writes UTF-8 (that is what Claude Code reads), but
+# PowerShell decodes native output with [Console]::OutputEncoding - the OEM code
+# page by default, which garbles the bar characters. Switch to UTF-8 for the test
+# and its output, and always restore it: this runs in the user's own console.
 $samplePath = Join-Path ([System.IO.Path]::GetTempPath()) 'claude-statusline-sample.json'
-[System.IO.File]::WriteAllText($samplePath, '{"model":{"display_name":"Test"},"context_window":{"context_window_size":200000,"total_input_tokens":50000}}', $utf8NoBom)
-# The statusline writes UTF-8 (that is what Claude Code reads). PowerShell decodes
-# native output with [Console]::OutputEncoding - the OEM code page by default, which
-# garbles the bar characters here. Switch to UTF-8 for the test and its output and
-# restore it afterwards, since "irm | iex" runs inside the user's own shell.
 $prevOutputEncoding = $null
-try { $prevOutputEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = $utf8NoBom } catch { }
 try {
+    try { $prevOutputEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = $utf8NoBom } catch { }
+    [System.IO.File]::WriteAllText($samplePath, '{"model":{"display_name":"Test"},"context_window":{"context_window_size":200000,"total_input_tokens":50000}}', $utf8NoBom)
     if ($node) { $out = Get-Content -LiteralPath $samplePath -Raw | & node $scriptPath }
     elseif ($python) { $out = Get-Content -LiteralPath $samplePath -Raw | & python $scriptPath }
     else { $out = Get-Content -LiteralPath $samplePath -Raw | & powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath }
-} finally {
-    Remove-Item -LiteralPath $samplePath -ErrorAction SilentlyContinue
-}
-try {
     if (-not $out) { throw 'Smoke test failed: no output.' }
     Write-Host ''
     Write-Host "Statusline installed ($runtime): $scriptPath"
@@ -1278,5 +1368,7 @@ try {
     Write-Host "Test output:  $out"
     Write-Host 'Done. New Claude Code sessions show the statusline; running sessions after a restart.'
 } finally {
+    Remove-Item -LiteralPath $samplePath -ErrorAction SilentlyContinue
     if ($prevOutputEncoding) { try { [Console]::OutputEncoding = $prevOutputEncoding } catch { } }
+}
 }

@@ -41,7 +41,9 @@ Every installer is **idempotent**, merges `~/.claude/settings.json` **losslessly
 and runs a smoke test before finishing. Your settings from before the first install are
 saved as `settings.json.bak` — re-running an installer never overwrites that backup.
 Installers check that a runtime actually works before using it (e.g. the Microsoft Store
-`python.exe` placeholder on Windows is skipped).
+`python.exe` placeholder on Windows is skipped). If you already have your own
+`~/.claude/statusline.js` / `.py` / `.ps1`, it is set aside as `statusline.<ext>.bak` instead
+of being overwritten.
 New Claude Code sessions show the statusline immediately; running sessions after a restart.
 
 **Update:** run the same command again. It replaces the script and keeps your original
@@ -230,9 +232,9 @@ npx @hashfox/claude-code-statusline --uninstall
 ```
 
 Uninstalling removes the `statusLine` entry — or restores the statusline you had before, if
-`settings.json.bak` contains one — and deletes `~/.claude/statusline.{js,py,ps1}`. All other
-settings stay as they are. It only touches `settings.json` if this statusline is the one
-registered there.
+`settings.json.bak` contains one — and deletes this project's `~/.claude/statusline.*` scripts,
+putting back your own script if the installer had set it aside. All other settings stay as they
+are. It only touches `settings.json` if this statusline is the one registered there.
 
 ## Development
 
