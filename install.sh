@@ -300,12 +300,13 @@ def read_tail(path, max_bytes):
         return f.read().decode("utf-8", errors="replace")
 
 
-def waiting_on_tool(path):
+def last_message_waiting(text):
     """Last message entry of a subagent transcript: assistant with tool_use =
     waiting for a tool (e.g. a long build), user with tool_result = the model
     is working on the next step. Either way nothing is written to the
-    transcript until it finishes, but the agent is still running."""
-    for line in reversed(read_tail(path, 64 * 1024).split("\n")):
+    transcript until it finishes, but the agent is still running.
+    Returns None if `text` holds no complete message entry."""
+    for line in reversed(text.split("\n")):
         if '"type"' not in line:
             continue
         try:
@@ -319,6 +320,18 @@ def waiting_on_tool(path):
             return False
         want = "tool_use" if obj["type"] == "assistant" else "tool_result"
         return any(isinstance(c, dict) and c.get("type") == want for c in content)
+    return None
+
+
+def waiting_on_tool(path):
+    """The last entry can be large (e.g. a tool_result holding a whole file),
+    so read a bigger tail if the first 64 KB hold no complete message entry."""
+    for size in (64 * 1024, 2 * 1024 * 1024):
+        state = last_message_waiting(read_tail(path, size))
+        if state is not None:
+            return state
+        if os.path.getsize(path) <= size:
+            break
     return False
 
 
@@ -660,21 +673,33 @@ function gitBranch(cwd) {
   return null;
 }
 
-function waitingOnTool(file) {
+function lastMessageWaiting(text) {
   // Last message entry of a subagent transcript: assistant with tool_use =
   // waiting for a tool (e.g. a long build), user with tool_result = the model
   // is working on the next step. Either way nothing is written to the
   // transcript until it finishes, but the agent is still running.
-  const lines = readTail(file, 64 * 1024).split('\n');
+  // Returns null if `text` holds no complete message entry.
+  const lines = text.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].includes('"type"')) continue;
     let obj;
     try { obj = JSON.parse(lines[i]); } catch { continue; }
-    if (obj.type !== 'assistant' && obj.type !== 'user') continue;
+    if (!obj || (obj.type !== 'assistant' && obj.type !== 'user')) continue;
     const content = obj.message && obj.message.content;
     if (!Array.isArray(content)) return false;
     const want = obj.type === 'assistant' ? 'tool_use' : 'tool_result';
     return content.some((c) => c && c.type === want);
+  }
+  return null;
+}
+
+function waitingOnTool(file) {
+  // The last entry can be large (e.g. a tool_result holding a whole file), so
+  // read a bigger tail if the first 64 KB hold no complete message entry.
+  for (const bytes of [64 * 1024, 2 * 1024 * 1024]) {
+    const state = lastMessageWaiting(readTail(file, bytes));
+    if (state !== null) return state;
+    if (fs.statSync(file).size <= bytes) break;
   }
   return false;
 }

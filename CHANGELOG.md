@@ -31,6 +31,10 @@
   UTF-8 for the test and restored afterwards. The statusline itself was not affected.
 - **Subagents waiting on a long tool call** (> 45 s, e.g. a build) disappeared from the
   counter. They now stay counted for up to 10 minutes while a tool call is pending.
+  This also works when the last transcript entry is larger than 64 KB (e.g. a
+  `tool_result` holding a whole file).
+- PowerShell variant: the console output encoding is set to UTF-8 *without* BOM, so
+  Windows PowerShell 5.1 cannot emit a BOM in front of the statusline.
 
 ## 1.1.0
 
