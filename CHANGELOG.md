@@ -26,6 +26,9 @@
   arguments to native programs, so the script path could end up unquoted in
   `settings.json`. The merge now receives it via an environment variable.
 - `install.ps1` no longer closes the PowerShell window on an error when run via `irm | iex`.
+- `install.ps1` printed the smoke-test output garbled (`Ôöé Ôû░Ôû░…`) because PowerShell decoded
+  the script's UTF-8 output with the console's OEM code page. The console is switched to
+  UTF-8 for the test and restored afterwards. The statusline itself was not affected.
 - **Subagents waiting on a long tool call** (> 45 s, e.g. a build) disappeared from the
   counter. They now stay counted for up to 10 minutes while a tool call is pending.
 

@@ -1218,6 +1218,12 @@ if ((Invoke-StatuslineMerge 'install' $cmd) -ne 0) { throw 'Could not update set
 # Smoke test
 $samplePath = Join-Path ([System.IO.Path]::GetTempPath()) 'claude-statusline-sample.json'
 [System.IO.File]::WriteAllText($samplePath, '{"model":{"display_name":"Test"},"context_window":{"context_window_size":200000,"total_input_tokens":50000}}', $utf8NoBom)
+# The statusline writes UTF-8 (that is what Claude Code reads). PowerShell decodes
+# native output with [Console]::OutputEncoding - the OEM code page by default, which
+# garbles the bar characters here. Switch to UTF-8 for the test and its output and
+# restore it afterwards, since "irm | iex" runs inside the user's own shell.
+$prevOutputEncoding = $null
+try { $prevOutputEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = $utf8NoBom } catch { }
 try {
     if ($node) { $out = Get-Content -LiteralPath $samplePath -Raw | & node $scriptPath }
     elseif ($python) { $out = Get-Content -LiteralPath $samplePath -Raw | & python $scriptPath }
@@ -1225,10 +1231,13 @@ try {
 } finally {
     Remove-Item -LiteralPath $samplePath -ErrorAction SilentlyContinue
 }
-if (-not $out) { throw 'Smoke test failed: no output.' }
-
-Write-Host ''
-Write-Host "Statusline installed ($runtime): $scriptPath"
-Write-Host "settings.json updated: $settingsPath (backup: settings.json.bak)"
-Write-Host "Test output:  $out"
-Write-Host 'Done. New Claude Code sessions show the statusline; running sessions after a restart.'
+try {
+    if (-not $out) { throw 'Smoke test failed: no output.' }
+    Write-Host ''
+    Write-Host "Statusline installed ($runtime): $scriptPath"
+    Write-Host "settings.json updated: $settingsPath (backup: settings.json.bak)"
+    Write-Host "Test output:  $out"
+    Write-Host 'Done. New Claude Code sessions show the statusline; running sessions after a restart.'
+} finally {
+    if ($prevOutputEncoding) { try { [Console]::OutputEncoding = $prevOutputEncoding } catch { } }
+}
