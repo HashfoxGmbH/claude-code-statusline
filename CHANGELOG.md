@@ -16,6 +16,21 @@
 - `build.ps1` runs on Windows, macOS and Linux (`pwsh ./build.ps1`).
 
 ### Fixed
+- **Your own `~/.claude/statusline.*` was overwritten:** these are common names for
+  hand-written statuslines. The installers overwrote such a file without a backup (and
+  skipped the settings backup, since the entry looked like ours); uninstall then deleted it.
+  Scripts are now recognized by their content: a foreign file is set aside as
+  `statusline.<ext>.bak` and put back on uninstall, together with your previous statusLine.
+- **`irm | iex` changed the caller's shell:** `install.ps1` left `$ErrorActionPreference =
+  'Stop'` plus its variables and functions in the user's session, failed under
+  `Set-StrictMode` (PowerShell-only path) and under `$PSNativeCommandUseErrorActionPreference`.
+  It now runs in its own scope. The console encoding is restored even if the smoke test fails.
+- Installers read `settings.json` before writing any file, so an invalid `settings.json`
+  no longer leaves a stray script behind.
+- The three settings-merge implementations now agree on edge cases (case-insensitive path
+  match, restoring an empty `statusLine` object).
+- `package.json` sets `publishConfig.access = public`, required for the first publish of a
+  scoped package.
 - **Backup lost on re-install:** every run overwrote `settings.json.bak`, so after a second
   run it no longer contained your original settings. The backup is now only written while
   this statusline is not yet registered.
@@ -31,6 +46,10 @@
   UTF-8 for the test and restored afterwards. The statusline itself was not affected.
 - **Subagents waiting on a long tool call** (> 45 s, e.g. a build) disappeared from the
   counter. They now stay counted for up to 10 minutes while a tool call is pending.
+  This also works when the last transcript entry is larger than 64 KB (e.g. a
+  `tool_result` holding a whole file).
+- PowerShell variant: the console output encoding is set to UTF-8 *without* BOM, so
+  Windows PowerShell 5.1 cannot emit a BOM in front of the statusline.
 
 ## 1.1.0
 

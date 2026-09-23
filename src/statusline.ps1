@@ -120,12 +120,13 @@ function Get-GitBranch([string]$cwd) {
     return $null
 }
 
-function Test-WaitingOnTool([string]$path) {
+function Get-LastMessageWaiting([string]$text) {
     # Last message entry of a subagent transcript: assistant with tool_use =
     # waiting for a tool (e.g. a long build), user with tool_result = the model
     # is working on the next step. Either way nothing is written to the
     # transcript until it finishes, but the agent is still running.
-    $lines = (Read-Tail $path 65536) -split "`n"
+    # Returns $null if $text holds no complete message entry.
+    $lines = $text -split "`n"
     for ($i = $lines.Count - 1; $i -ge 0; $i--) {
         if ($lines[$i] -notmatch '"type"') { continue }
         try { $obj = $lines[$i] | ConvertFrom-Json } catch { continue }
@@ -135,6 +136,17 @@ function Test-WaitingOnTool([string]$path) {
         $want = if ($obj.type -eq 'assistant') { 'tool_use' } else { 'tool_result' }
         foreach ($c in @($content)) { if ($c.type -eq $want) { return $true } }
         return $false
+    }
+    return $null
+}
+
+function Test-WaitingOnTool([string]$path) {
+    # The last entry can be large (e.g. a tool_result holding a whole file), so
+    # read a bigger tail if the first 64 KB hold no complete message entry.
+    foreach ($bytes in 65536, 2097152) {
+        $state = Get-LastMessageWaiting (Read-Tail $path $bytes)
+        if ($null -ne $state) { return $state }
+        if ((New-Object System.IO.FileInfo($path)).Length -le $bytes) { break }
     }
     return $false
 }
@@ -195,7 +207,9 @@ function Get-RateLimits($data) {
 }
 
 try {
-    try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+    # UTF-8 without BOM: [Text.Encoding]::UTF8 carries a BOM preamble that
+    # Windows PowerShell 5.1 can emit in front of the statusline.
+    try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
     # stdin is UTF-8; without this Windows reads it with the OEM code page and
     # garbles non-ASCII paths (folder name, git lookup).
     try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }

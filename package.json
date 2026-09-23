@@ -29,6 +29,9 @@
   "bugs": {
     "url": "https://github.com/HashfoxGmbH/claude-code-statusline/issues"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=16"
   }
