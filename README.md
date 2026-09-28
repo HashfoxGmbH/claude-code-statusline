@@ -31,12 +31,6 @@ irm https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/in
 curl -fsSL https://raw.githubusercontent.com/HashfoxGmbH/claude-code-statusline/main/install.sh | bash
 ```
 
-**npm / npx**:
-
-```bash
-npx @hashfox/claude-code-statusline
-```
-
 Every installer is **idempotent**, merges `~/.claude/settings.json` **losslessly**
 and runs a smoke test before finishing. Your settings from before the first install are
 saved as `settings.json.bak` — re-running an installer never overwrites that backup.
