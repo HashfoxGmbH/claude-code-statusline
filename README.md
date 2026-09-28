@@ -7,7 +7,6 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL-blue)](#installation)
 [![Runtime](https://img.shields.io/badge/runtime-Node%20%7C%20Python%20%7C%20PowerShell-8A2BE2)](#how-the-installer-picks-a-runtime)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![npm](https://img.shields.io/npm/v/%40hashfox%2Fclaude-code-statusline?logo=npm&color=CB3837)](https://www.npmjs.com/package/@hashfox/claude-code-statusline)
 
 <img src="assets/demo.svg" alt="Statusline demo below the Claude Code input" width="980">
 
